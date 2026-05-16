@@ -1,0 +1,31 @@
+# Build directories
+/build/
+/build-*/
+
+# CMake/Ninja transient files
+CMakeUserPresets.json
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Dependency/install caches
+/vcpkg_installed/
+
+# Runtime logs and outputs
+*.log
+*.out
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE/editor
+.vscode/
+.idea/
+*.suo
+*.user
+*.VC.db
+
+# OS files
+.DS_Store
+Thumbs.db

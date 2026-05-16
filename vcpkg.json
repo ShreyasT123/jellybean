@@ -1,0 +1,11 @@
+{
+  "name": "jellybean",
+  "version": "0.1.0",
+  "dependencies": [
+    "liburing",
+    "gtest",
+    "benchmark",
+    "fmt",
+    "spdlog"
+  ]
+}
