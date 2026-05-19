@@ -1,5 +1,6 @@
 #include "jellybean/reactor/reactor.hpp"
 #include "jellybean/scheduler/fiber.hpp"
+#include "jellybean/concurrency/backoff.hpp"
 #include <chrono>
 
 namespace jellybean::reactor {
@@ -7,9 +8,7 @@ namespace jellybean::reactor {
 thread_local Reactor* Reactor::current_ = nullptr;
 
 Reactor::Reactor(std::unique_ptr<EventBackend> backend)
-    : backend_(std::move(backend)), thread_id_(std::this_thread::get_id()) {
-    current_ = this;
-}
+    : backend_(std::move(backend)) {}
 
 Reactor::~Reactor() {
     if (current_ == this) {
@@ -20,6 +19,7 @@ Reactor::~Reactor() {
 void Reactor::run() {
     running_.store(true, std::memory_order_release);
     thread_id_ = std::this_thread::get_id();
+    current_ = this;
     
     auto now_init = std::chrono::steady_clock::now().time_since_epoch();
     timer_wheel_.initialize(std::chrono::duration_cast<std::chrono::nanoseconds>(now_init).count());
@@ -29,10 +29,10 @@ void Reactor::run() {
         process_external_queue();
 
         // 1. Process local run queue (fibers)
-        std::vector<std::coroutine_handle<>> current_queue;
-        current_queue.swap(run_queue_);
+        scratch_queue_.clear();
+        scratch_queue_.swap(run_queue_);
         
-        for (auto h : current_queue) {
+        for (auto h : scratch_queue_) {
             if (h && !h.done()) {
                 h.resume();
             }
@@ -63,10 +63,11 @@ void Reactor::schedule(std::coroutine_handle<> h) {
     if (std::this_thread::get_id() == thread_id_) {
         run_queue_.push_back(h);
     } else {
-        while (!external_queue_.try_push(std::move(h))) {
-            std::this_thread::yield();
+        concurrency::Backoff backoff;
+        while (!external_queue_.try_push(h)) {
+            backoff.pause();
         }
-        external_pending_.fetch_add(1, std::memory_order_release);
+        external_pending_.fetch_add(1, std::memory_order_relaxed);
         if (backend_) {
             backend_->wakeup();
         }
@@ -76,7 +77,7 @@ void Reactor::schedule(std::coroutine_handle<> h) {
 void Reactor::process_external_queue() {
     while (auto h = external_queue_.try_pop()) {
         run_queue_.push_back(*h);
-        external_pending_.fetch_sub(1, std::memory_order_release);
+        external_pending_.fetch_sub(1, std::memory_order_relaxed);
     }
 }
 
@@ -84,7 +85,7 @@ void Reactor::add_timer(uint64_t delay_ns, std::function<void()> cb) {
     timer_wheel_.add_timer(delay_ns, std::move(cb));
 }
 
-Reactor* Reactor::current() {
+Reactor* Reactor::current() noexcept {
     return current_;
 }
 

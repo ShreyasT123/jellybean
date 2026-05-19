@@ -27,15 +27,16 @@ TEST(ProtoCodecTest, EncodeParseRoundTrip) {
 
     const auto parsed = parse_frame(std::span<const std::byte>(buffer.data(), encoded));
     ASSERT_TRUE(parsed.valid);
-    ASSERT_NE(parsed.header, nullptr);
-    EXPECT_EQ(parsed.header->magic, MAGIC);
-    EXPECT_EQ(parsed.header->version, VERSION);
-    EXPECT_EQ(parsed.header->type, static_cast<std::uint16_t>(MessageType::ActorMessage));
-    EXPECT_EQ(parsed.header->flags, 0x7u);
-    EXPECT_EQ(parsed.header->actor_id, 42u);
-    EXPECT_EQ(parsed.header->message_id, 99u);
-    EXPECT_EQ(parsed.header->payload_length, payload.size());
-    EXPECT_TRUE(std::equal(parsed.payload.begin(), parsed.payload.end(), payload.begin()));
+    ASSERT_NE(parsed.header_ptr(), nullptr);
+    EXPECT_EQ(parsed.header.magic, MAGIC);
+    EXPECT_EQ(parsed.header.version, VERSION);
+    EXPECT_EQ(parsed.header.type, static_cast<std::uint16_t>(MessageType::ActorMessage));
+    EXPECT_EQ(parsed.header.flags, 0x7u);
+    EXPECT_EQ(parsed.header.actor_id, 42u);
+    EXPECT_EQ(parsed.header.message_id, 99u);
+    EXPECT_EQ(parsed.header.payload_length, payload.size());
+    const auto parsed_payload = parsed.payload();
+    EXPECT_TRUE(std::equal(parsed_payload.begin(), parsed_payload.end(), payload.begin()));
 }
 
 TEST(ProtoCodecTest, CorruptedPayloadFailsCrc) {
@@ -53,7 +54,6 @@ TEST(ProtoCodecTest, CorruptedPayloadFailsCrc) {
     buffer[sizeof(FrameHeader)] ^= std::byte{0x01};
 
     const auto parsed = parse_frame(std::span<const std::byte>(buffer.data(), encoded));
-    ASSERT_NE(parsed.header, nullptr);
     EXPECT_FALSE(parsed.valid);
     EXPECT_NE(parsed.expected_crc, parsed.actual_crc);
 }
@@ -62,7 +62,7 @@ TEST(ProtoCodecTest, RejectsShortBuffer) {
     std::array<std::byte, sizeof(FrameHeader) - 1> short_buf{};
     const auto parsed = parse_frame(short_buf);
     EXPECT_FALSE(parsed.valid);
-    EXPECT_EQ(parsed.header, nullptr);
+    EXPECT_EQ(parsed.header_ptr(), nullptr);
 }
 
 TEST(ProtoCodecTest, EncodeAddsExpectedPadding) {

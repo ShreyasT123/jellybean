@@ -2,9 +2,9 @@
 set -euo pipefail
 
 BUILD_DIR="${BUILD_DIR:-build}"
-SERVER_CONFIG="${SERVER_CONFIG:-server.config}"
 LIBTORCH_ROOT="${LIBTORCH_ROOT:-/opt/libtorch}"
+GTEST_FILTER="${GTEST_FILTER:-PedagogicalWalkthroughTest.*}"
 
 cmake -S . -B "$BUILD_DIR" -DENABLE_TORCH=ON -DLIBTORCH_ROOT="$LIBTORCH_ROOT"
-cmake --build "$BUILD_DIR" --config Release --target jellybean_infer_server_demo
-"./$BUILD_DIR/src/jellybean_infer_server_demo" "$SERVER_CONFIG"
+cmake --build "$BUILD_DIR" --config Release --target unit_tests
+"./$BUILD_DIR/tests/unit/unit_tests" --gtest_filter="$GTEST_FILTER"

@@ -1,0 +1,93 @@
+{
+  "settings": {
+    "shape": "1,128,512",
+    "requests": 240,
+    "concurrency": 8,
+    "warmup": 15,
+    "jb_sync_host": "127.0.0.1",
+    "jb_sync_port": 9001,
+    "jb_async_host": "127.0.0.1",
+    "jb_async_port": 9000,
+    "fastapi_host": "127.0.0.1",
+    "fastapi_port": 9002,
+    "json_out": "benchmark_results_after_async_fix2.json"
+  },
+  "results": {
+    "jellybean_sync_tcp": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 14.868086894824026,
+      "latency_ms_avg": 315.51752,
+      "latency_ms_p50": 324.5004,
+      "latency_ms_p95": 394.6428,
+      "latency_ms_p99": 422.0401,
+      "wall_s": 16.1419557
+    },
+    "jellybean_async_tcp": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 14.371819362925871,
+      "latency_ms_avg": 339.27090291666667,
+      "latency_ms_p50": 344.4975,
+      "latency_ms_p95": 450.6226,
+      "latency_ms_p99": 485.9844,
+      "wall_s": 16.6993471
+    },
+    "fastapi_http": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 6.986970958567873,
+      "latency_ms_avg": 782.8106491666666,
+      "latency_ms_p50": 785.4883,
+      "latency_ms_p95": 907.5122,
+      "latency_ms_p99": 946.0813,
+      "wall_s": 34.349649
+    }
+  }
+}{
+  "settings": {
+    "shape": "1,128,512",
+    "requests": 240,
+    "concurrency": 8,
+    "warmup": 15,
+    "jb_sync_host": "127.0.0.1",
+    "jb_sync_port": 9001,
+    "jb_async_host": "127.0.0.1",
+    "jb_async_port": 9000,
+    "fastapi_host": "127.0.0.1",
+    "fastapi_port": 9002,
+    "json_out": "benchmark_results_after_async_fix2.json"
+  },
+  "results": {
+    "jellybean_sync_tcp": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 14.868086894824026,
+      "latency_ms_avg": 315.51752,
+      "latency_ms_p50": 324.5004,
+      "latency_ms_p95": 394.6428,
+      "latency_ms_p99": 422.0401,
+      "wall_s": 16.1419557
+    },
+    "jellybean_async_tcp": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 14.371819362925871,
+      "latency_ms_avg": 339.27090291666667,
+      "latency_ms_p50": 344.4975,
+      "latency_ms_p95": 450.6226,
+      "latency_ms_p99": 485.9844,
+      "wall_s": 16.6993471
+    },
+    "fastapi_http": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 6.986970958567873,
+      "latency_ms_avg": 782.8106491666666,
+      "latency_ms_p50": 785.4883,
+      "latency_ms_p95": 907.5122,
+      "latency_ms_p99": 946.0813,
+      "wall_s": 34.349649
+    }
+  }
+}

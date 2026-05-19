@@ -11,6 +11,7 @@ public:
     virtual bool load(const std::string& model_id, const std::string& model_path, DeviceKind device) = 0;
     virtual bool unload(const std::string& model_id) = 0;
     virtual InferenceResponse infer(const InferenceRequest& req) = 0;
+    virtual std::vector<InferenceResponse> infer_batch(const std::vector<InferenceRequest>& batch) = 0;
 };
 
 } // namespace jellybean::inference

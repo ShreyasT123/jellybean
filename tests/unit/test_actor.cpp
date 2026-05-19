@@ -8,10 +8,7 @@ using namespace jellybean::scheduler;
 
 class TestActor : public ActorBase {
 public:
-    TestActor(ActorId id, uint32_t shard) {
-        id_ = id;
-        shard_id_ = shard;
-    }
+    TestActor(ActorId id, uint32_t shard) : ActorBase(id, shard, nullptr) {}
 
     int last_received_val = 0;
     int received_count = 0;

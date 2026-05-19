@@ -1,13 +1,9 @@
 #pragma once
 #include "jellybean/reactor/reactor.hpp"
-
-#if defined(__linux__)
 #include <liburing.h>
-#endif
 
 namespace jellybean::reactor {
 
-#if defined(__linux__)
 class IoUringBackend : public EventBackend {
 public:
     IoUringBackend();
@@ -20,6 +16,5 @@ public:
 private:
     struct io_uring ring_;
 };
-#endif
 
 } // namespace jellybean::reactor

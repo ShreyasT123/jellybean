@@ -1,64 +1,67 @@
-# Jellybean Inference Runtime
-Jellybean is a C++ inference runtime prototype in a Triton-style direction:
-- LibTorch model loading and inference
-- concurrency-safe runtime queues and worker scheduling
-- TCP inference server with framed binary protocol
-- Python client for load testing
-- config-driven model I/O validation and file logging
+# Jellybean Runtime (Test-Driven Systems Prototype)
 
-This is a portfolio-grade systems prototype, not a production server.
+Jellybean is a C++ systems runtime project focused on inference runtime internals:
+- lock-free queues and scheduler primitives
+- reactor/timer infrastructure
+- memory allocators (arena/slab)
+- inference runtime and LibTorch backend
+- **Production-grade Inference Server (`jellybean_server`)**
 
-## Current Demos
-- `jellybean_infer_demo`: in-process runtime benchmark path
-- `jellybean_infer_server_demo`: TCP server path using `server.config`
-- `jellybean_torch_smoke`: LibTorch sanity check
-- `jellybean_demo`: legacy systems-runtime checks (mailbox/timer/tcp echo)
+## Dependency Model
 
-## Quick Start (Windows)
+`vcpkg` is **not required**.
+
+Primary requirements:
+- CMake 3.25+
+- C++23 compiler
+- Ninja (recommended)
+- LibTorch (for inference backend tests)
+- GTest
+
+## Build And Run Tests
+
+Linux/macOS:
+
+```bash
+cmake -S . -B build -DENABLE_TORCH=ON -DLIBTORCH_ROOT=/opt/libtorch
+cmake --build build --config Release --target unit_tests
+ctest --test-dir build --output-on-failure
+```
+
+Windows:
+
 ```powershell
-.\scripts\run_server.ps1 -LibTorchRoot C:/deps/libtorch
-python .\tools\infer_client.py --host 127.0.0.1 --port 9000 --shape 1,128,512 --requests 40
+cmake -S . -B build -DENABLE_TORCH=ON -DLIBTORCH_ROOT=C:/deps/libtorch
+cmake --build build --config Release --target unit_tests
+ctest --test-dir build --output-on-failure
 ```
 
-## Quick Start (Linux)
+## Demo-Style Test Runs
+
+Use the pedagogical walkthrough tests as live demos:
+
+Linux/macOS:
+
 ```bash
-LIBTORCH_ROOT=/opt/libtorch ./scripts/run_server.sh
-python3 tools/infer_client.py --host 127.0.0.1 --port 9000 --shape 1,128,512 --requests 40
+./build/tests/unit/unit_tests --gtest_filter="PedagogicalWalkthroughTest.*"
 ```
 
-Or with make:
-```bash
-make build
-make server
-make client
+Windows:
+
+```powershell
+.\build\tests\unit\Release\unit_tests.exe --gtest_filter="PedagogicalWalkthroughTest.*"
 ```
 
-## Config
-Server reads `server.config` (key=value). Important fields:
-- `model_id`, `model_path`
-- `host`, `port`
-- `input_shape`
-- `expected_output_elems`
-- `workers`, `queue_size`, `enqueue_timeout_ms`
-- `max_requests` (`0` for no auto-stop)
-- `log_file`
+Helper scripts:
+- `scripts/run_server.sh` (now runs demo-style test filters)
+- `scripts/run_server.ps1` (same behavior on Windows)
 
 ## Repo Layout
-- `include/jellybean/inference/` -> inference API/runtime headers
-- `src/inference/` -> backend and runtime implementation
-- `src/demo/infer_server_demo.cpp` -> TCP inference server demo
-- `tools/infer_client.py` -> Python load client
-- `scripts/run_server.ps1` / `scripts/run_server.sh` -> build + run entrypoints
-- `docs/` -> architecture, memory model, protocol, and roadmap docs
 
-## Status
-Implemented:
-- model load/infer path with TorchScript (`model.pt`)
-- bounded queue + worker runtime with enqueue timeout backpressure
-- TCP server/client flow with validation and file logging
-
-Next:
-- dynamic batching
-- deeper observability/metrics
-- async transport/reactor integration
-- multi-node control-plane slice
+- `include/jellybean/` core headers
+- `src/` runtime implementations
+- `src/server/main.cpp` production server entry point
+- `tests/unit/` unit + pedagogical demonstration tests
+- `docs/` architecture, findings, and production-readiness notes
+- `configs/` server configuration files
+- `tools/` client and profiling utilities

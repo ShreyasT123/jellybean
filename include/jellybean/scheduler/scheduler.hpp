@@ -1,6 +1,6 @@
 #pragma once
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 namespace jellybean::scheduler {
 
@@ -8,10 +8,10 @@ namespace jellybean::scheduler {
  * @brief Represents a logical CPU core and its properties.
  */
 struct CpuCore {
-    int cpu_id;        // Logical CPU index (0 to N-1)
-    int physical_id;   // Physical core index
-    int numa_node;     // NUMA node index
-    bool is_p_core;    // True if it's a Performance core (hybrid arch)
+    int cpu_id;       // Logical CPU index (0 to N-1)
+    int physical_id;  // Physical core index
+    int numa_node;    // NUMA node index
+    bool is_p_core;   // True if it's a Performance core (hybrid arch)
 };
 
 /**
@@ -20,7 +20,7 @@ struct CpuCore {
 struct CpuTopology {
     std::vector<CpuCore> cores;
 
-    static CpuTopology detect();
+    static auto detect() -> CpuTopology;
 };
 
 /**
@@ -28,4 +28,4 @@ struct CpuTopology {
  */
 void pin_thread_to_cpu(int cpu_id);
 
-} // namespace jellybean::scheduler
+}  // namespace jellybean::scheduler

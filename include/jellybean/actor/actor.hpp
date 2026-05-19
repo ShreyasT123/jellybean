@@ -3,108 +3,63 @@
 #include <vector>
 #include <memory>
 #include <type_traits>
-#include <cstring>
 #include <cstddef>
+#include <cstring>
 #include "jellybean/scheduler/fiber.hpp"
 #include "jellybean/memory/arena.hpp"
 
 namespace jellybean::actor {
 
 /**
- * @brief Type-erased message with SSO (Small Stack Optimization).
+ * @brief Type-erased Message container utilizing Small Stack Optimization (SSO).
  * 
- * Copy-safe with deep-copy semantics for heap-backed payloads.
+ * In high-frequency actor serving systems, millions of small control signals
+ * (such as heartbeats, model configurations, small request frames, or latency markers)
+ * are passed continuously. Allocating heap memory for each individual message
+ * is highly expensive.
+ * 
+ * Key Architecture Concepts:
+ * 
+ *   1. SMALL STACK OPTIMIZATION (SSO):
+ *      We define a static inline size of 48 bytes. If the payload object is <= 48 bytes,
+ *      it is copied directly into an inline byte storage array (`inline_data`) on the stack.
+ *      This completely bypasses the memory allocator for common small message payloads!
+ * 
+ *   2. DEEP-COPY FALLBACK:
+ *      If the payload size exceeds 48 bytes (e.g. large tensor input buffers), the message
+ *      allocates heap storage (`heap_data`), performing full deep copies to guarantee safety
+ *      across asynchronous execution boundaries.
+ * 
+ *   3. COPY & MOVE COMPATIBILITY:
+ *      Ensures robust and safe copy/move construction and assignment semantics, managing the
+ *      lifetime of the inline/heap-allocated union fields properly.
  */
 struct Message {
     static constexpr size_t INLINE_SIZE = 48;
     
-    uint32_t type_id{0};
-    uint32_t sender_shard{0};
-    uint64_t sender_id{0};
+    uint32_t type_id{0};          // Unique identifier for the payload's type
+    uint32_t sender_shard{0};     // The shard ID of the sending actor
+    uint64_t sender_id{0};        // The unique actor ID of the sender
     
     union {
         alignas(std::max_align_t) std::byte inline_data[INLINE_SIZE];
         struct { std::byte* ptr; size_t size; } heap_data;
     };
-    bool is_inline{true};
+    bool is_inline{true};         // Indicates whether the payload is stored inline or on the heap
     
-    Message() {
-        std::memset(inline_data, 0, INLINE_SIZE);
-    }
+    Message();
+    Message(const Message& other);
+    Message& operator=(const Message& other);
+    Message(Message&& other) noexcept;
+    Message& operator=(Message&& other) noexcept;
+    ~Message();
 
-    Message(const Message& other)
-        : type_id(other.type_id),
-          sender_shard(other.sender_shard),
-          sender_id(other.sender_id),
-          is_inline(other.is_inline) {
-        if (is_inline) {
-            std::memcpy(inline_data, other.inline_data, INLINE_SIZE);
-        } else {
-            heap_data.size = other.heap_data.size;
-            heap_data.ptr = static_cast<std::byte*>(std::malloc(heap_data.size));
-            if (!heap_data.ptr) std::abort();
-            std::memcpy(heap_data.ptr, other.heap_data.ptr, heap_data.size);
-        }
-    }
-
-    Message& operator=(const Message& other) {
-        if (this == &other) return *this;
-        destroy();
-        type_id = other.type_id;
-        sender_shard = other.sender_shard;
-        sender_id = other.sender_id;
-        is_inline = other.is_inline;
-        if (is_inline) {
-            std::memcpy(inline_data, other.inline_data, INLINE_SIZE);
-        } else {
-            heap_data.size = other.heap_data.size;
-            heap_data.ptr = static_cast<std::byte*>(std::malloc(heap_data.size));
-            if (!heap_data.ptr) std::abort();
-            std::memcpy(heap_data.ptr, other.heap_data.ptr, heap_data.size);
-        }
-        return *this;
-    }
-
-    Message(Message&& other) noexcept 
-        : type_id(other.type_id), 
-          sender_shard(other.sender_shard), 
-          sender_id(other.sender_id), 
-          is_inline(other.is_inline) {
-        if (is_inline) {
-            std::memcpy(inline_data, other.inline_data, INLINE_SIZE);
-        } else {
-            heap_data = other.heap_data;
-            other.heap_data.ptr = nullptr;
-            other.heap_data.size = 0;
-            other.is_inline = true; // Reset other to safe state
-            std::memset(other.inline_data, 0, INLINE_SIZE);
-        }
-    }
-
-    Message& operator=(Message&& other) noexcept {
-        if (this != &other) {
-            destroy();
-            type_id = other.type_id;
-            sender_shard = other.sender_shard;
-            sender_id = other.sender_id;
-            is_inline = other.is_inline;
-            if (is_inline) {
-                std::memcpy(inline_data, other.inline_data, INLINE_SIZE);
-            } else {
-                heap_data = other.heap_data;
-                other.heap_data.ptr = nullptr;
-                other.heap_data.size = 0;
-                other.is_inline = true;
-                std::memset(other.inline_data, 0, INLINE_SIZE);
-            }
-        }
-        return *this;
-    }
-
-    ~Message() {
-        destroy();
-    }
-
+    /**
+     * @brief Stores an object inside the message. Uses SSO if the size fits.
+     * 
+     * @tparam T Trivially copyable payload type.
+     * @param val The payload value to store.
+     */
     template<typename T>
     void set(const T& val) {
         static_assert(std::is_trivially_copyable_v<T>);
@@ -122,31 +77,27 @@ struct Message {
         }
     }
 
+    /**
+     * @brief Retrieves a read-only reference to the stored object.
+     * 
+     * @tparam T Trivially copyable payload type.
+     * @return const T& Reference to the stored payload.
+     */
     template<typename T>
     const T& as() const noexcept {
         static_assert(std::is_trivially_copyable_v<T>);
         static_assert(alignof(T) <= alignof(std::max_align_t));
         if (is_inline) {
-            if constexpr (sizeof(T) > INLINE_SIZE) {
-                std::abort();
-            }
             return *reinterpret_cast<const T*>(inline_data);
         }
         return *reinterpret_cast<const T*>(heap_data.ptr);
     }
     
-    void destroy() {
-        if (!is_inline && heap_data.ptr) {
-            std::free(heap_data.ptr);
-            heap_data.ptr = nullptr;
-            heap_data.size = 0;
-            is_inline = true;
-        }
-    }
+    void destroy();
 };
 
 /**
- * @brief Base class for all actors.
+ * @brief Base class for all asynchronous actors.
  */
 class ActorBase {
 public:
@@ -155,7 +106,7 @@ public:
     virtual ~ActorBase() = default;
     
     /**
-     * @brief Asynchronously receive a message.
+     * @brief Asynchronously dispatches and handles an incoming message.
      */
     virtual jellybean::scheduler::Task<> receive(Message msg) = 0;
     
@@ -163,9 +114,12 @@ public:
     uint32_t shard() const noexcept { return shard_id_; }
 
 protected:
-    ActorId id_;
-    uint32_t shard_id_;
-    jellybean::memory::ArenaAllocator* arena_;
+    explicit ActorBase(ActorId id, uint32_t shard_id, jellybean::memory::ArenaAllocator* arena) noexcept
+        : id_(id), shard_id_(shard_id), arena_(arena) {}
+
+    ActorId id_{0};                                   // Unique actor identifier
+    uint32_t shard_id_{0};                            // The pinned CPU shard/event loop this actor resides in
+    jellybean::memory::ArenaAllocator* arena_{nullptr}; // Shard-local arena allocator for request memory
 };
 
 } // namespace jellybean::actor

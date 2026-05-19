@@ -1,14 +1,14 @@
 #include "jellybean/reactor/io_uring_backend.hpp"
-
-#if defined(__linux__)
 #include <liburing.h>
-#include <stdexcept>
+#include <cstdio>
+#include <cstdlib>
 
 namespace jellybean::reactor {
 
 IoUringBackend::IoUringBackend() {
     if (io_uring_queue_init(4096, &ring_, 0) < 0) {
-        throw std::runtime_error("Failed to initialize io_uring");
+        fprintf(stderr, "Fatal: Failed to initialize io_uring\n");
+        std::abort();
     }
 }
 
@@ -40,4 +40,3 @@ void IoUringBackend::submit_read(int fd, void* buf, size_t len, off_t offset, vo
 }
 
 } // namespace jellybean::reactor
-#endif

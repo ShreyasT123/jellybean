@@ -53,7 +53,7 @@ public:
      */
     void add_timer(uint64_t delay_ns, std::function<void()> cb);
 
-    static Reactor* current();
+    [[nodiscard]] static Reactor* current() noexcept;
 
 private:
     void process_external_queue();
@@ -61,6 +61,7 @@ private:
     std::unique_ptr<EventBackend> backend_;
     TimerWheel timer_wheel_;
     std::vector<std::coroutine_handle<>> run_queue_;
+    std::vector<std::coroutine_handle<>> scratch_queue_;
     
     // Thread-safe ingress for external threads
     jellybean::concurrency::MpmcQueue<std::coroutine_handle<>, 1024> external_queue_;

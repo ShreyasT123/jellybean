@@ -9,6 +9,7 @@ add_executable(unit_tests
     test_work_stealing_deque.cpp
     test_actor.cpp
     test_proto.cpp
+    test_pedagogical_demo.cpp
 )
 
 target_link_libraries(unit_tests PRIVATE

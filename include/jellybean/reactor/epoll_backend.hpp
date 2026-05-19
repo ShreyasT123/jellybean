@@ -3,16 +3,15 @@
 
 namespace jellybean::reactor {
 
-#if defined(__linux__)
-class EpollBackend : public EventBackend {
-public:
+class EpollBackend final : public EventBackend {
+   public:
     EpollBackend();
-    ~EpollBackend() override;
-    int poll(int timeout_ms) override;
+    virtual ~EpollBackend() noexcept override;
+    virtual auto poll(int timeout_ms) noexcept -> int override;
+    auto epoll_fd() const noexcept -> int;
 
-private:
+   private:
     int epoll_fd_;
 };
-#endif
 
-} // namespace jellybean::reactor
+}  // namespace jellybean::reactor

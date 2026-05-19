@@ -1,4 +1,5 @@
 #include "jellybean/proto/codec.hpp"
+
 #include <array>
 #include <cstring>
 #include <limits>
@@ -13,11 +14,14 @@ namespace {
 
 constexpr std::uint32_t CRC32C_POLYNOMIAL = 0x82F63B78u;
 
-constexpr std::array<std::uint32_t, 256> make_crc32c_table() noexcept {
-    std::array<std::uint32_t, 256> table{};
+constexpr std::size_t TABLE_SIZE = 256;
+constexpr int BITS_PER_BYTE = 8;
+
+constexpr auto make_crc32c_table() noexcept -> std::array<std::uint32_t, TABLE_SIZE> {
+    std::array<std::uint32_t, TABLE_SIZE> table{};
     for (std::uint32_t i = 0; i < table.size(); ++i) {
         std::uint32_t crc = i;
-        for (int bit = 0; bit < 8; ++bit) {
+        for (int bit = 0; bit < BITS_PER_BYTE; ++bit) {
             if ((crc & 1u) != 0u) {
                 crc = (crc >> 1u) ^ CRC32C_POLYNOMIAL;
             } else {
@@ -31,7 +35,8 @@ constexpr std::array<std::uint32_t, 256> make_crc32c_table() noexcept {
 
 constexpr auto CRC32C_TABLE = make_crc32c_table();
 
-[[nodiscard, maybe_unused]] std::uint32_t crc32c_software(std::span<const std::byte> data) noexcept {
+[[nodiscard, maybe_unused]] auto crc32c_software(std::span<const std::byte> data) noexcept
+    -> std::uint32_t {
     std::uint32_t crc = 0xFFFFFFFFu;
     for (const std::byte value : data) {
         const auto byte = std::to_integer<std::uint8_t>(value);
@@ -41,7 +46,7 @@ constexpr auto CRC32C_TABLE = make_crc32c_table();
     return ~crc;
 }
 
-} // namespace
+}  // namespace
 
 std::uint32_t crc32c(std::span<const std::byte> data) noexcept {
 #if defined(__SSE4_2__) && (defined(__x86_64__) || defined(_M_X64))
@@ -91,21 +96,18 @@ ParsedFrame parse_frame(std::span<const std::byte> buffer) noexcept {
     std::memcpy(&wire_crc, buffer.data() + layout.crc_offset, sizeof(wire_crc));
     const auto computed_crc = crc32c(buffer.first(sizeof(FrameHeader) + payload_size));
 
-    parsed.header = header;
-    parsed.payload = std::span<const std::byte>(buffer.data() + sizeof(FrameHeader), payload_size);
+    parsed.header = *header;
+    parsed.payload_owned.assign(buffer.data() + sizeof(FrameHeader),
+                                buffer.data() + sizeof(FrameHeader) + payload_size);
     parsed.expected_crc = computed_crc;
     parsed.actual_crc = wire_crc;
     parsed.valid = (computed_crc == wire_crc);
     return parsed;
 }
 
-std::size_t encode_frame(
-    std::span<std::byte> buffer,
-    MessageType type,
-    std::uint16_t flags,
-    std::uint64_t actor_id,
-    std::uint64_t message_id,
-    std::span<const std::byte> payload) noexcept {
+std::size_t encode_frame(std::span<std::byte> buffer, MessageType type, std::uint16_t flags,
+                         std::uint64_t actor_id, std::uint64_t message_id,
+                         std::span<const std::byte> payload) noexcept {
     if (!payload_size_fits(payload.size())) {
         return 0;
     }
@@ -140,12 +142,9 @@ std::size_t encode_frame(
     return layout.total_size;
 }
 
-std::size_t encode_frame(
-    std::span<std::byte> buffer,
-    MessageType type,
-    std::uint64_t actor_id,
-    std::span<const std::byte> payload) noexcept {
+std::size_t encode_frame(std::span<std::byte> buffer, MessageType type, std::uint64_t actor_id,
+                         std::span<const std::byte> payload) noexcept {
     return encode_frame(buffer, type, 0, actor_id, 0, payload);
 }
 
-} // namespace jellybean::proto
+}  // namespace jellybean::proto

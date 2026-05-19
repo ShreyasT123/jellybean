@@ -1,16 +1,16 @@
-﻿# Jellybean Memory Model (Current)
+# Memory Model Notes
 
-## Queue and Worker Semantics
-- Each registered model owns a bounded ring-style queue.
-- Producers enqueue requests under mutex with timeout backpressure.
-- Workers poll model queues and execute backend inference.
+## Primary Hot-Path Memory Decisions
+- Request I/O buffers are allocated from arena allocators and reset per loop.
+- Runtime queues use bounded lock-free ring buffers to avoid unbounded allocation growth.
+- Model execution copies/normalizes tensors where required by LibTorch semantics.
 
-## Safety Goals
-- No unbounded queue growth.
-- Deterministic enqueue rejection when full and timeout expires.
-- Clean shutdown by signaling queue stop and joining workers.
+## Safety Rules
+- Never keep `std::span`/pointer views past owner lifetime.
+- Avoid cross-thread ownership ambiguities for buffers returned by async tasks.
+- Validate all network-derived lengths before allocation and copy.
 
-## Current Tradeoffs
-- Uses mutex/condition variable for correctness and simplicity.
-- Runtime currently favors clarity over peak lock-free throughput.
-- Next phase can replace queue internals while preserving API.
+## Current Risks To Track
+- Queue pressure can still trigger high reject rates under bursty traffic.
+- Arena usage must remain strictly per-connection/per-thread to avoid races.
+- Batch response cardinality must always match request count in runtime workers.

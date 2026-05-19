@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <span>
+
 namespace jellybean::inference {
 
 enum class DeviceKind {
@@ -13,7 +15,8 @@ enum class DeviceKind {
 struct InferenceRequest {
     std::string model_id;
     std::vector<int64_t> shape;
-    std::vector<float> input;
+    std::span<const float> input;
+    std::span<float> output_buffer; // Pre-allocated by network thread Arena
     DeviceKind device{DeviceKind::Cpu};
 };
 
@@ -21,7 +24,7 @@ struct InferenceResponse {
     bool ok{false};
     std::string error;
     std::vector<int64_t> shape;
-    std::vector<float> output;
+    uint32_t output_elems_written{0};
     uint64_t latency_ns{0};
 };
 

@@ -3,52 +3,63 @@
 
 namespace jellybean::reactor {
 
+/**
+ * @brief Constructor.
+ */
 TimerWheel::TimerWheel() {
-    // current_tick_ is initialized to some reasonable baseline or 0
+    // Baseline current_tick_ is initialized to 0
 }
 
+/**
+ * @brief Schedules a new timer callback on the wheel.
+ */
 void TimerWheel::add_timer(uint64_t delay_ns, Callback cb) {
+    // Map absolute nanosecond delay to tick count
     uint64_t ticks = delay_ns / TICK_NS;
-    if (ticks == 0) ticks = 1; // Minimum 1 tick delay
+    if (ticks == 0) ticks = 1; // Force a minimum 1 tick delay to guarantee async flow separation
     
+    // Target tick absolute point
     uint64_t expires_tick = current_tick_ + ticks;
+    
+    // High-performance bitwise AND modulo slot calculation
     size_t slot = expires_tick & (SLOTS - 1);
     
+    // Add timer to the corresponding bucket slot
     slots_[slot].push_back({expires_tick, std::move(cb)});
 }
 
+/**
+ * @brief Initializes baseline absolute tick count.
+ */
 void TimerWheel::initialize(uint64_t now_ns) {
     current_tick_ = now_ns / TICK_NS;
 }
 
+/**
+ * @brief Advances clock ticks sequentially up to target time and fires expired timers.
+ */
 void TimerWheel::advance(uint64_t now_ns) {
     uint64_t target_tick = now_ns / TICK_NS;
     
+    // Step forward one tick at a time to check each slot sequentially, avoiding gaps
     while (current_tick_ < target_tick) {
         current_tick_++;
+        
         size_t slot = current_tick_ & (SLOTS - 1);
         auto& entries = slots_[slot];
         
         if (entries.empty()) continue;
 
-        // Move expired timers to a temporary list to avoid O(n^2) erase
-        std::vector<TimerEntry> expired;
-        std::vector<TimerEntry> survivors;
-        survivors.reserve(entries.size());
+        auto mid = std::stable_partition(
+            entries.begin(),
+            entries.end(),
+            [this](const TimerEntry& entry) { return entry.expires_tick > current_tick_; });
 
-        for (auto& entry : entries) {
-            if (entry.expires_tick <= current_tick_) {
-                expired.push_back(std::move(entry));
-            } else {
-                survivors.push_back(std::move(entry));
-            }
-        }
-        
-        entries = std::move(survivors);
-
-        for (auto& entry : expired) {
+        for (auto it = mid; it != entries.end(); ++it) {
+            auto& entry = *it;
             entry.callback();
         }
+        entries.erase(mid, entries.end());
     }
 }
 

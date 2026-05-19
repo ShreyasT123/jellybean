@@ -1,17 +1,21 @@
 BUILD_DIR ?= build
 CONFIG ?= Release
-SERVER_CONFIG ?= server.config
+LIBTORCH_ROOT ?= /opt/libtorch
+GTEST_FILTER ?= PedagogicalWalkthroughTest.*
 
-.PHONY: configure build server client
+.PHONY: configure build test demo-tests server
 
 configure:
-	cmake -S . -B $(BUILD_DIR) -DENABLE_TORCH=ON -DLIBTORCH_ROOT=/opt/libtorch
+	cmake -S . -B $(BUILD_DIR) -DENABLE_TORCH=ON -DLIBTORCH_ROOT=$(LIBTORCH_ROOT)
 
 build:
-	cmake --build $(BUILD_DIR) --config $(CONFIG) --target jellybean_infer_server_demo
+	cmake --build $(BUILD_DIR) --config $(CONFIG)
+
+test:
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 server: build
-	./$(BUILD_DIR)/src/jellybean_infer_server_demo $(SERVER_CONFIG)
+	./$(BUILD_DIR)/src/jellybean_server
 
-client:
-	python3 tools/infer_client.py --host 127.0.0.1 --port 9000 --shape 1,128,512 --requests 40
+demo-tests: build
+	./$(BUILD_DIR)/tests/unit/unit_tests --gtest_filter="$(GTEST_FILTER)"

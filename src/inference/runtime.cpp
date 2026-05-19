@@ -1,16 +1,48 @@
 #include "jellybean/inference/runtime.hpp"
 
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <utility>
+#include "jellybean/concurrency/backoff.hpp"
 
 namespace jellybean::inference {
+
+RuntimeConfig RuntimeConfig::from_file(const std::string& path) {
+    RuntimeConfig cfg;
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return cfg;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 1);
+
+        // Trim possible whitespace including \r from Windows line endings
+        key.erase(0, key.find_first_not_of(" \t\r"));
+        key.erase(key.find_last_not_of(" \t\r") + 1);
+        val.erase(0, val.find_first_not_of(" \t\r"));
+        val.erase(val.find_last_not_of(" \t\r") + 1);
+
+        if (key == "worker_threads") cfg.worker_threads = std::stoul(val);
+        else if (key == "max_queue_size") cfg.max_queue_size = std::stoul(val);
+        else if (key == "enqueue_timeout_ms") cfg.enqueue_timeout = std::chrono::milliseconds(std::stoul(val));
+        else if (key == "max_batch_size") cfg.max_batch_size = std::stoul(val);
+        else if (key == "max_batch_delay_us") cfg.max_batch_delay_us = std::stoll(val);
+    }
+    return cfg;
+}
 
 InferenceRuntime::InferenceRuntime(RuntimeConfig cfg) : cfg_(cfg) {
     if (cfg_.worker_threads == 0) {
         cfg_.worker_threads = 1;
-    }
-    if (cfg_.max_queue_size == 0) {
-        cfg_.max_queue_size = 1;
     }
     workers_.reserve(cfg_.worker_threads);
     for (std::size_t i = 0; i < cfg_.worker_threads; ++i) {
@@ -22,14 +54,12 @@ InferenceRuntime::~InferenceRuntime() {
     shutdown();
 }
 
-bool InferenceRuntime::register_model(const std::string& model_id, std::shared_ptr<IInferenceBackend> backend) {
+auto InferenceRuntime::register_model(const std::string& model_id, std::shared_ptr<IInferenceBackend> backend) -> bool {
     if (!backend) {
         return false;
     }
 
     auto mq = std::make_shared<ModelQueue>();
-    mq->capacity = cfg_.max_queue_size;
-    mq->queue.resize(cfg_.max_queue_size);
     mq->backend = std::move(backend);
 
     std::lock_guard lock(models_mu_);
@@ -37,49 +67,57 @@ bool InferenceRuntime::register_model(const std::string& model_id, std::shared_p
     return inserted;
 }
 
-InferenceResponse InferenceRuntime::infer(const InferenceRequest& req) {
+auto InferenceRuntime::infer(const InferenceRequest& req) -> InferenceResponse {
+    auto fut = infer_async(req);
+    return fut.get();
+}
+
+auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<InferenceResponse> {
+    metrics_.requests_received.fetch_add(1, std::memory_order_relaxed);
+
     std::shared_ptr<ModelQueue> mq;
     {
         std::lock_guard lock(models_mu_);
         auto it = model_queues_.find(req.model_id);
         if (it == model_queues_.end()) {
+            std::promise<InferenceResponse> p;
             InferenceResponse resp;
             resp.error = "model not registered: " + req.model_id;
-            return resp;
+            p.set_value(std::move(resp));
+            return p.get_future();
         }
         mq = it->second;
     }
 
     auto deadline = std::chrono::steady_clock::now() + cfg_.enqueue_timeout;
-    std::future<InferenceResponse> fut;
-    {
-        std::unique_lock lock(mq->mu);
-        while (mq->size == mq->capacity && !mq->stopped) {
-            if (mq->cv_has_space.wait_until(lock, deadline) == std::cv_status::timeout) {
-                InferenceResponse resp;
-                resp.error = "queue full timeout for model: " + req.model_id;
-                return resp;
-            }
+    Task slot;
+    slot.req = req;
+    auto fut = slot.promise.get_future();
+
+    while (!mq->stopped.load(std::memory_order_acquire)) {
+        Task temp = std::move(slot);
+        if (mq->queue.try_push(std::move(temp))) {
+            return fut;
         }
-        if (mq->stopped) {
+        slot = std::move(temp); // NOLINT(bugprone-use-after-move)
+        
+        if (std::chrono::steady_clock::now() > deadline) {
+            metrics_.queue_timeouts.fetch_add(1, std::memory_order_relaxed);
+            std::promise<InferenceResponse> p;
             InferenceResponse resp;
-            resp.error = "runtime stopped";
-            return resp;
+            resp.error = "queue full timeout for model: " + req.model_id;
+            p.set_value(std::move(resp));
+            return p.get_future();
         }
-
-        Task& slot = mq->queue[mq->tail];
-        slot.req = req;
-        fut = slot.promise.get_future();
-        mq->tail = (mq->tail + 1) % mq->capacity;
-        ++mq->size;
+        // Lock-free queue is full, backoff slightly to avoid 100% CPU spin
+        std::this_thread::yield();
     }
 
-    mq->cv_has_data.notify_one();
-    {
-        std::lock_guard wake_lock(wake_mu_);
-    }
-    wake_cv_.notify_one();
-    return fut.get();
+    std::promise<InferenceResponse> p;
+    InferenceResponse resp;
+    resp.error = "runtime stopped";
+    p.set_value(std::move(resp));
+    return p.get_future();
 }
 
 void InferenceRuntime::shutdown() {
@@ -90,14 +128,10 @@ void InferenceRuntime::shutdown() {
         }
         stopped_ = true;
         for (auto& [_, mq] : model_queues_) {
-            std::lock_guard qlock(mq->mu);
-            mq->stopped = true;
-            mq->cv_has_data.notify_all();
-            mq->cv_has_space.notify_all();
+            mq->stopped.store(true, std::memory_order_release);
         }
     }
 
-    wake_cv_.notify_all();
     for (auto& worker : workers_) {
         if (worker.joinable()) {
             worker.join();
@@ -106,14 +140,16 @@ void InferenceRuntime::shutdown() {
 }
 
 void InferenceRuntime::worker_loop() {
+    std::vector<std::shared_ptr<ModelQueue>> queues;
+    constexpr size_t INITIAL_QUEUE_CAPACITY = 16;
+    queues.reserve(INITIAL_QUEUE_CAPACITY);
     for (;;) {
-        std::vector<std::shared_ptr<ModelQueue>> queues;
+        queues.clear();
         {
             std::lock_guard lock(models_mu_);
             if (stopped_) {
                 return;
             }
-            queues.reserve(model_queues_.size());
             for (const auto& [_, mq] : model_queues_) {
                 queues.push_back(mq);
             }
@@ -121,31 +157,55 @@ void InferenceRuntime::worker_loop() {
 
         bool did_work = false;
         for (auto& mq : queues) {
-            Task task;
-            bool popped = false;
-            {
-                std::lock_guard lock(mq->mu);
-                if (mq->size > 0) {
-                    task = std::move(mq->queue[mq->head]);
-                    mq->queue[mq->head].promise = std::promise<InferenceResponse>{};
-                    mq->head = (mq->head + 1) % mq->capacity;
-                    --mq->size;
-                    popped = true;
+            if (mq->stopped.load(std::memory_order_acquire)) continue;
+
+            std::vector<Task> batch;
+            batch.reserve(cfg_.max_batch_size);
+            auto first_time = std::chrono::steady_clock::now();
+            concurrency::Backoff backoff;
+            
+            while (batch.size() < cfg_.max_batch_size) {
+                auto task_opt = mq->queue.try_pop();
+                if (task_opt) {
+                    batch.push_back(std::move(*task_opt));
+                    backoff.reset();
+                } else {
+                    if (batch.empty()) {
+                        break; // Queue is empty, check next queue
+                    }
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - first_time).count();
+                    if (elapsed >= cfg_.max_batch_delay_us) {
+                        break; // Flush batch due to timeout
+                    }
+                    backoff.pause();
                 }
             }
-            if (!popped) {
-                continue;
-            }
-            mq->cv_has_space.notify_one();
 
-            InferenceResponse resp = mq->backend->infer(task.req);
-            task.promise.set_value(std::move(resp));
-            did_work = true;
+            if (!batch.empty()) {
+                std::vector<InferenceRequest> reqs;
+                reqs.reserve(batch.size());
+                for (const auto& t : batch) reqs.push_back(t.req);
+
+                auto resps = mq->backend->infer_batch(reqs);
+
+                for (size_t i = 0; i < batch.size(); ++i) {
+                    latency_hist_.record(resps[i].latency_ns);
+                    if (resps[i].ok) {
+                        metrics_.requests_completed.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        metrics_.requests_rejected.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    batch[i].promise.set_value(std::move(resps[i]));
+                }
+                did_work = true;
+            }
         }
 
         if (!did_work) {
-            std::unique_lock wake_lock(wake_mu_);
-            wake_cv_.wait_for(wake_lock, std::chrono::milliseconds(1));
+            // No work available in any queue. Since we dropped the heavy condition_variable,
+            // we use a micro-sleep to prevent burning CPU cycles in an empty lock-free loop.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     }
 }

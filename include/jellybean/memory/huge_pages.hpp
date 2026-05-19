@@ -7,11 +7,11 @@ namespace jellybean::memory {
 
 /**
  * @brief Allocates memory using huge pages (2MB) if available.
- * 
+ *
  * On Linux, uses mmap with MAP_HUGETLB. Falls back to standard mmap if fails.
  * On Windows, uses VirtualAlloc with MEM_LARGE_PAGES (requires privileges).
  */
-void* allocate_huge_pages(size_t size_bytes);
+auto allocate_huge_pages(size_t size_bytes) -> void*;
 
 /**
  * @brief Frees memory allocated via allocate_huge_pages.
@@ -28,11 +28,11 @@ struct HugePageDeleter {
     }
 };
 
-template<typename T>
+template <typename T>
 using huge_page_unique_ptr = std::unique_ptr<T[], HugePageDeleter>;
 
-template<typename T>
-huge_page_unique_ptr<T> allocate_huge_pages_unique(size_t count) {
+template <typename T>
+auto allocate_huge_pages_unique(size_t count) -> huge_page_unique_ptr<T> {
     size_t size = count * sizeof(T);
     void* ptr = allocate_huge_pages(size);
     if (!ptr) {
@@ -41,4 +41,4 @@ huge_page_unique_ptr<T> allocate_huge_pages_unique(size_t count) {
     return huge_page_unique_ptr<T>(static_cast<T*>(ptr), HugePageDeleter{size});
 }
 
-} // namespace jellybean::memory
+}  // namespace jellybean::memory
