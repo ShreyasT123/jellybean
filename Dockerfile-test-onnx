@@ -1,0 +1,33 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and extract ONNX Runtime
+WORKDIR /opt
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz \
+    && tar -xzf onnxruntime-linux-x64-1.26.0.tgz \
+    && rm onnxruntime-linux-x64-1.26.0.tgz
+
+WORKDIR /workspace
+
+# Copy C++ source and the exported model files
+COPY test_onnx.cpp .
+COPY model.onnx* .
+
+# Compile test_onnx.cpp linking against ONNX Runtime (source file goes before -lonnxruntime)
+RUN g++ -std=c++17 -O3 test_onnx.cpp -o test_onnx \
+    -I/opt/onnxruntime-linux-x64-1.26.0/include \
+    -L/opt/onnxruntime-linux-x64-1.26.0/lib \
+    -lonnxruntime
+
+# Run test
+ENV LD_LIBRARY_PATH=/opt/onnxruntime-linux-x64-1.26.0/lib
+CMD ["./test_onnx"]

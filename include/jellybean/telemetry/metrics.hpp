@@ -5,7 +5,24 @@
 #include <bit>
 #include <cstdint>
 
+#include <string>
+
 namespace jellybean::telemetry {
+
+struct PlainMetrics {
+    uint64_t requests_received{0};
+    uint64_t requests_completed{0};
+    uint64_t requests_rejected{0};
+    uint64_t queue_timeouts{0};
+};
+
+struct ModelExecutorMetrics {
+    std::string model_id;
+    PlainMetrics metrics;
+    uint64_t p50_ns{0};
+    uint64_t p95_ns{0};
+    uint64_t p99_ns{0};
+};
 
 // Lock-free runtime counters
 struct RuntimeMetrics {

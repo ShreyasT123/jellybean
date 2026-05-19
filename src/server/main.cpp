@@ -24,17 +24,21 @@
 #include "jellybean/reactor/future_awaitable.hpp"
 #include "jellybean/reactor/reactor.hpp"
 #include "jellybean/scheduler/fiber.hpp"
-
+#include "jellybean/model/model_registry.hpp"
+#include "jellybean/model/model_repository.hpp"
+#include "jellybean/telemetry/metrics_export.hpp"
 
 using namespace jellybean::core;
 using namespace jellybean::inference;
 using namespace jellybean::reactor;
 using namespace jellybean::net;
 using namespace jellybean::scheduler;
+using namespace jellybean::model;
 
 std::atomic<bool> g_running{true};
 
 void signal_handler(int sig) {
+    (void)sig;
     g_running = false;
     if (auto* r = Reactor::current()) {
         r->stop();
@@ -44,6 +48,7 @@ void signal_handler(int sig) {
 struct ExtendedConfig {
     std::string model_id;
     std::string model_path;
+    std::string model_repository{"models"};
     std::string host;
     int port{9000};
     std::vector<int64_t> input_shape;
@@ -73,6 +78,8 @@ auto load_extended_config(const std::string& path) -> ExtendedConfig {
             cfg.model_id = val;
         else if (key == "model_path")
             cfg.model_path = val;
+        else if (key == "model_repository")
+            cfg.model_repository = val;
         else if (key == "host")
             cfg.host = val;
         else if (key == "port")
@@ -114,15 +121,24 @@ struct AsyncAcceptAwaitable {
 
 Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig config) {
     try {
-        JELLY_LOG_INFO << "[SESSION] New client connected\n";
+        JELLY_LOG_INFO("[SESSION] New client connected");
         while (g_running) {
+            uint8_t model_id_len = 0;
+            ssize_t n = co_await sock.read(&model_id_len, 1);
+            if (n <= 0) break;
+
+            std::string model_id;
+            model_id.resize(model_id_len);
+            n = co_await sock.read(model_id.data(), model_id_len);
+            if (n <= 0) break;
+
             uint32_t input_elems = 0;
-            ssize_t n = co_await sock.read(&input_elems, sizeof(input_elems));
+            n = co_await sock.read(&input_elems, sizeof(input_elems));
             if (n <= 0) {
-                JELLY_LOG_DEBUG << "[SESSION] Read input_elems failed: n=" << n << "\n";
+                JELLY_LOG_DEBUG("[SESSION] Read input_elems failed: n={}", n);
                 break;
             }
-            JELLY_LOG_DEBUG << "[SESSION] Received input_elems: " << input_elems << "\n";
+            JELLY_LOG_DEBUG("[SESSION] Received input_elems: {} for model: {}", input_elems, model_id);
 
             // Cap memory usage to prevent silent OOM crashes
             const uint32_t MAX_ELEMS = 100000000;
@@ -142,12 +158,12 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
                 n = co_await sock.read(reinterpret_cast<char*>(input_vec.data()) + bytes_read,
                                        bytes_to_read - bytes_read);
                 if (n <= 0) {
-                    JELLY_LOG_DEBUG << "[SESSION] Read payload failed: n=" << n << " bytes_read=" << bytes_read << "/" << bytes_to_read << "\n";
+                    JELLY_LOG_DEBUG("[SESSION] Read payload failed: n={} bytes_read={}/{}", n, bytes_read, bytes_to_read);
                     co_return;
                 }
                 bytes_read += n;
             }
-            JELLY_LOG_DEBUG << "[SESSION] Received payload: " << bytes_read << " bytes\n";
+            JELLY_LOG_DEBUG("[SESSION] Received payload: {} bytes", bytes_read);
 
             std::vector<float> output_buf;
             try {
@@ -157,40 +173,40 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
             }
 
             InferenceRequest req;
-            req.model_id = config.model_id;
-            req.shape = config.input_shape;
+            req.model_id = model_id;
+            req.shape = config.input_shape; // Fallback, could be removed later
             req.input = input_vec;
             req.output_buffer = output_buf;
             req.device = config.device;
 
-            JELLY_LOG_DEBUG << "[SESSION] Calling infer_async for model '" << config.model_id << "'\n";
+            JELLY_LOG_DEBUG("[SESSION] Calling infer_async for model '{}'", model_id);
             InferenceResponse resp = co_await infer_future(runtime.infer_async(req));
-            JELLY_LOG_DEBUG << "[SESSION] Inference completed: ok=" << resp.ok << " latency_ns=" << resp.latency_ns << " output_elems=" << resp.output_elems_written << "\n";
+            JELLY_LOG_DEBUG("[SESSION] Inference completed: ok={} latency_ns={} output_elems={}", resp.ok, resp.latency_ns, resp.output_elems_written);
 
             uint8_t status = resp.ok ? 1 : 0;
             n = co_await sock.write(&status, 1);
-            JELLY_LOG_DEBUG << "[SESSION] Sent status: " << (int)status << " (wrote " << n << " bytes)\n";
+            JELLY_LOG_DEBUG("[SESSION] Sent status: {} (wrote {} bytes)", (int)status, n);
             
             n = co_await sock.write(&resp.latency_ns, 8);
-            JELLY_LOG_DEBUG << "[SESSION] Sent latency: " << resp.latency_ns << " (wrote " << n << " bytes)\n";
+            JELLY_LOG_DEBUG("[SESSION] Sent latency: {} (wrote {} bytes)", resp.latency_ns, n);
 
             uint32_t out_elems = resp.output_elems_written;
             n = co_await sock.write(&out_elems, 4);
-            JELLY_LOG_DEBUG << "[SESSION] Sent out_elems: " << out_elems << " (wrote " << n << " bytes)\n";
+            JELLY_LOG_DEBUG("[SESSION] Sent out_elems: {} (wrote {} bytes)", out_elems, n);
 
             if (resp.ok && out_elems > 0) {
                 n = co_await sock.write(output_buf.data(), out_elems * sizeof(float));
-                JELLY_LOG_DEBUG << "[SESSION] Sent output payload: " << out_elems * sizeof(float) << " bytes (wrote " << n << " bytes)\n";
+                JELLY_LOG_DEBUG("[SESSION] Sent output payload: {} bytes (wrote {} bytes)", out_elems * sizeof(float), n);
             }
         }
     } catch (const JellybeanException& e) {
-        JELLY_LOG_ERROR << "[SESSION] JellybeanException: " << e.what() << "\n";
+        JELLY_LOG_ERROR("[SESSION] JellybeanException: {}", e.what());
     } catch (const std::bad_alloc& e) {
-        JELLY_LOG_ERROR << "[SESSION] Memory Error (bad_alloc): " << e.what() << "\n";
+        JELLY_LOG_ERROR("[SESSION] Memory Error (bad_alloc): {}", e.what());
     } catch (const std::exception& e) {
-        JELLY_LOG_ERROR << "[SESSION] Exception: " << e.what() << "\n";
+        JELLY_LOG_ERROR("[SESSION] Exception: {}", e.what());
     }
-    JELLY_LOG_INFO << "[SESSION] Client disconnected\n";
+    JELLY_LOG_INFO("[SESSION] Client disconnected");
     co_return;
 }
 
@@ -198,11 +214,11 @@ Task<> accept_loop(int listen_fd, int epoll_fd, InferenceRuntime& runtime, Exten
     while (g_running) {
         int client_fd = co_await AsyncAcceptAwaitable{epoll_fd, listen_fd};
         if (client_fd >= 0) {
-            JELLY_LOG_INFO << "[ACCEPT] New connection accepted, fd=" << client_fd << "\n";
+            JELLY_LOG_INFO("[ACCEPT] New connection accepted, fd={}", client_fd);
             auto s = session(AsyncSocket(client_fd, epoll_fd), runtime, config);
             Reactor::current()->schedule(s.release());
         } else {
-            JELLY_LOG_ERROR << "[ACCEPT] Accept failed, fd=" << client_fd << "\n";
+            JELLY_LOG_ERROR("[ACCEPT] Accept failed, fd={}", client_fd);
         }
     }
     co_return;
@@ -213,33 +229,43 @@ int main(int argc, char* argv[]) {
         std::string config_path = "configs/server.config";
         if (argc > 1) config_path = argv[1];
 
-        JELLY_LOG_INFO << "Jellybean Production Server starting [" << config_path << "]\n";
-        JELLY_LOG_DEBUG << "[MAIN] Config path: " << config_path << "\n";
+        JELLY_LOG_INFO("Jellybean Production Server starting [{}]", config_path);
+        JELLY_LOG_DEBUG("[MAIN] Config path: {}", config_path);
 
         auto runtime_cfg = RuntimeConfig::from_file(config_path);
-        JELLY_LOG_DEBUG << "[MAIN] RuntimeConfig loaded\n";
+        JELLY_LOG_DEBUG("[MAIN] RuntimeConfig loaded");
         auto ext_cfg = load_extended_config(config_path);
-        JELLY_LOG_DEBUG << "[MAIN] ExtendedConfig loaded: model_id='" << ext_cfg.model_id << "' host='" << ext_cfg.host << "' port=" << ext_cfg.port << "\n";
+        JELLY_LOG_DEBUG("[MAIN] ExtendedConfig loaded: repo='{}' host='{}' port={}", ext_cfg.model_repository, ext_cfg.host, ext_cfg.port);
 
-        auto backend = make_torch_backend();
-        JELLY_LOG_DEBUG << "[MAIN] Torch backend created\n";
-        JELLY_LOG_INFO << "Loading model '" << ext_cfg.model_id << "' from " << ext_cfg.model_path
-                  << "...\n";
-        if (!backend->load(ext_cfg.model_id, ext_cfg.model_path, ext_cfg.device)) {
-            throw ServerException("Failed to load model '" + ext_cfg.model_id + "' from path '" + ext_cfg.model_path + "'");
+        ModelRegistry registry;
+        auto load_result = ModelRepository::scan_and_load(ext_cfg.model_repository, registry);
+        if (load_result.loaded == 0) {
+            throw ServerException("No models were successfully loaded from repository: " + ext_cfg.model_repository);
         }
-        JELLY_LOG_DEBUG << "[MAIN] Model loaded successfully\n";
 
         InferenceRuntime runtime(runtime_cfg);
-        JELLY_LOG_DEBUG << "[MAIN] InferenceRuntime created\n";
-        if (!runtime.register_model(ext_cfg.model_id, backend)) {
-            throw ServerException("Failed to register model.");
+        JELLY_LOG_DEBUG("[MAIN] InferenceRuntime created");
+        
+        for (const auto& info : registry.list()) {
+            if (info.state == ModelState::Ready) {
+                ModelMetadata* meta = registry.lookup_ready(info.name);
+                if (meta) {
+                    if (!runtime.register_model(info.name, meta)) {
+                        JELLY_LOG_ERROR("[MAIN] Failed to register model '{}' with InferenceRuntime", info.name);
+                    } else {
+                        JELLY_LOG_INFO("[MAIN] Model '{}' registered and ready to serve", info.name);
+                    }
+                }
+            }
         }
-        JELLY_LOG_DEBUG << "[MAIN] Model registered successfully\n";
 
         auto epoll_backend = std::make_unique<EpollBackend>();
         int epoll_fd = epoll_backend->epoll_fd();
         Reactor reactor(std::move(epoll_backend));
+
+        jellybean::telemetry::MetricsServer metrics_server(runtime, 9001);
+        metrics_server.start();
+        JELLY_LOG_INFO("[MAIN] Telemetry server ready on port 9001");
 
         int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         int opt = 1;
@@ -261,20 +287,22 @@ int main(int argc, char* argv[]) {
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
 
-        JELLY_LOG_DEBUG << "[MAIN] Server ready on " << ext_cfg.host << ":" << ext_cfg.port << "\n";
-        JELLY_LOG_INFO << "Server ready on " << ext_cfg.host << ":" << ext_cfg.port << "\n";
+        JELLY_LOG_DEBUG("[MAIN] Server ready on {}:{}", ext_cfg.host, ext_cfg.port);
+        JELLY_LOG_INFO("Server ready on {}:{}", ext_cfg.host, ext_cfg.port);
 
         while (g_running) {
             reactor.run();
         }
 
-        JELLY_LOG_DEBUG << "[MAIN] Shutdown complete.\n";
-        JELLY_LOG_INFO << "Shutdown complete.\n";
+        metrics_server.stop();
+
+        JELLY_LOG_DEBUG("[MAIN] Shutdown complete.");
+        JELLY_LOG_INFO("Shutdown complete.");
     } catch (const JellybeanException& e) {
-        JELLY_LOG_ERROR << "Fatal Jellybean Error: " << e.what() << "\n";
+        JELLY_LOG_ERROR("Fatal Jellybean Error: {}", e.what());
         return 1;
     } catch (const std::exception& e) {
-        JELLY_LOG_ERROR << "Fatal System Error: " << e.what() << "\n";
+        JELLY_LOG_ERROR("Fatal System Error: {}", e.what());
         return 1;
     }
     return 0;

@@ -30,3 +30,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.pt
+*.onnx*
+*.onnx.*

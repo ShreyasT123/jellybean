@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     pkg-config \
     liburing-dev \
+    libspdlog-dev \
     python3 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -58,6 +59,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     liburing2 \
+    libspdlog-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -70,7 +72,7 @@ COPY --from=builder /workspace/build/src/jellybean_server /app/jellybean_server
 
 # --- Config and model ---
 COPY --from=builder /workspace/configs /app/configs
-COPY --from=builder /workspace/model.pt /app/model.pt
+COPY --from=builder /workspace/models /app/models
 
 WORKDIR /app
 

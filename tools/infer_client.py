@@ -46,12 +46,18 @@ def main():
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--shape", default="1,128,512")
     p.add_argument("--requests", type=int, default=40)
+    p.add_argument("--model", default="mock_transformer")
     args = p.parse_args()
 
     shape = parse_shape(args.shape)
     input_elems = num_elems(shape)
     payload = [((i % 113) * 0.01) for i in range(input_elems)]
     payload_bytes = struct.pack(f"<{input_elems}f", *payload)
+    
+    model_id_bytes = args.model.encode("utf-8")
+    if len(model_id_bytes) > 255:
+        raise ValueError("model ID too long")
+    model_header = struct.pack("<B", len(model_id_bytes)) + model_id_bytes
 
     lat_ns = []
     ok = 0
@@ -59,6 +65,7 @@ def main():
     t0 = time.perf_counter_ns()
     with socket.create_connection((args.host, args.port), timeout=10) as s:
         for _ in range(args.requests):
+            send_all(s, model_header)
             send_all(s, struct.pack("<I", input_elems))
             send_all(s, payload_bytes)
 

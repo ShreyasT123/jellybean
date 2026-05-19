@@ -1,0 +1,20 @@
+{
+  "settings": {
+    "shape": "1,128,512",
+    "requests": 240,
+    "concurrency": 8,
+    "debug": false
+  },
+  "results": {
+    "jellybean_async_tcp": {
+      "ok": 240,
+      "fail": 0,
+      "throughput_rps": 18.91,
+      "latency_ms_avg": 415.18,
+      "latency_ms_p50": 342.77,
+      "latency_ms_p95": 839.78,
+      "latency_ms_p99": 1002.11,
+      "wall_s": 12.688
+    }
+  }
+}

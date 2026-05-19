@@ -11,6 +11,12 @@ set(JELLYBEAN_SOURCES
     reactor/epoll_backend.cpp
     telemetry/metrics.cpp
     net/async_socket.cpp
+    model/model_config.cpp
+    model/model_registry.cpp
+    model/model_repository.cpp
+    model/model_executor.cpp
+    reactor/continuation_pool.cpp
+    telemetry/metrics_export.cpp
 )
 
 add_library(jellybean STATIC ${JELLYBEAN_SOURCES})
@@ -30,15 +36,19 @@ target_include_directories(jellybean PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# Note: exceptions enabled — inference backend and model loading rely on them
 target_compile_options(jellybean PRIVATE
-    -fno-exceptions -fno-rtti
+    -Wall -Wextra
 )
 
 target_compile_options(jellybean PUBLIC
-    -Wall -Wextra -Wpedantic -Werror -march=native -Wno-c99-extensions -Wno-unused-parameter -Wno-nested-anon-types
+    -Wall -Wextra -Wpedantic -march=native
 )
 
 target_link_libraries(jellybean PRIVATE pthread)
+find_package(spdlog REQUIRED)
+add_compile_definitions(SPDLOG_USE_STD_FORMAT)
+target_link_libraries(jellybean PUBLIC spdlog::spdlog_header_only)
 
 if(ENABLE_TORCH)
     target_link_libraries(jellybean_inference_torch PRIVATE jellybean "${TORCH_LIBRARIES}")

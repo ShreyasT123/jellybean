@@ -1,6 +1,8 @@
 # Wire Protocol (TCP)
 
 ## Request Frame
+- `uint8 model_id_len`
+- `utf8[model_id_len] model_id`
 - `uint32 input_elems`
 - `float32[input_elems] payload`
 

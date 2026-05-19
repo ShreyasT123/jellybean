@@ -4,35 +4,15 @@
 #include <future>
 #include <thread>
 
-#include "jellybean/reactor/reactor.hpp"
+#include "jellybean/reactor/continuation_pool.hpp"
 
 namespace jellybean::reactor {
 
 /**
  * @brief Zero-spin awaitable for std::future<T>.
  *
- * The standard busy-poll pattern:
- *   while (fut.wait_for(10us) != ready) { co_await Yield{}; }
- * burns reactor ticks: each Yield re-queues the coroutine frame and the
- * reactor iterates it again immediately, wasting CPU and delaying OTHER
- * sessions sharing the same reactor thread.
- *
- * A std::condition_variable would be worse — it would BLOCK the reactor
- * thread entirely, freezing every coroutine on it until the future fires.
- *
- * This awaitable is the correct pattern for reactor-based systems:
- *   1. await_ready()   — fast path: if already done, don't suspend at all.
- *   2. await_suspend() — slow path: spawn a minimal detached thread that
- *                        blocks on fut.wait() (off-reactor), then posts the
- *                        coroutine handle back via Reactor::schedule().
- *                        The reactor thread is 100% free to serve other work.
- *   3. await_resume()  — extracts the value after wakeup.
- *
- * Cost: one detached thread per inference call. Acceptable because:
- *   - The thread blocks in the kernel (futex), consuming zero CPU.
- *   - Inference latency (~100ms) dwarfs thread spawn overhead (~5µs).
- *   - For a production system, this can be replaced with a thread-pool-based
- *     continuation mechanism (see comments at bottom of file).
+ * This uses the ContinuationPool to block on the future off-reactor,
+ * avoiding the overhead of spawning detached threads per request.
  *
  * @tparam T  Return type of the future.
  */
@@ -50,11 +30,12 @@ struct FutureAwaitable {
     }
 
     void await_suspend(std::coroutine_handle<> h) {
-        // Move the future into the thread so it outlives this awaitable.
-        std::thread([h, r = reactor, f = std::move(fut), this]() mutable {
-            result = f.get();  // Block only on this detached thread, never on the reactor.
-            r->schedule(h);    // Wake the suspended coroutine via the reactor's external queue.
-        }).detach();
+        // Move the future into the pool so it outlives this awaitable.
+        auto shared_fut = std::make_shared<std::future<T>>(std::move(fut));
+        ContinuationPool::instance().post([h, r = reactor, f = shared_fut, this]() mutable {
+            result = f->get();  // Block only on the pool thread.
+            r->schedule(h);    // Wake the suspended coroutine.
+        });
     }
 
     auto await_resume() -> T {
