@@ -21,6 +21,7 @@
 #include "jellybean/inference/torch_backend.hpp"
 #include "jellybean/net/async_socket.hpp"
 #include "jellybean/reactor/epoll_backend.hpp"
+#include "jellybean/reactor/future_awaitable.hpp"
 #include "jellybean/reactor/reactor.hpp"
 #include "jellybean/scheduler/fiber.hpp"
 
@@ -163,11 +164,7 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
             req.device = config.device;
 
             JELLY_LOG_DEBUG << "[SESSION] Calling infer_async for model '" << config.model_id << "'\n";
-            auto fut = runtime.infer_async(req);
-            while (fut.wait_for(std::chrono::microseconds(10)) != std::future_status::ready) {
-                co_await Yield{};
-            }
-            InferenceResponse resp = fut.get();
+            InferenceResponse resp = co_await infer_future(runtime.infer_async(req));
             JELLY_LOG_DEBUG << "[SESSION] Inference completed: ok=" << resp.ok << " latency_ns=" << resp.latency_ns << " output_elems=" << resp.output_elems_written << "\n";
 
             uint8_t status = resp.ok ? 1 : 0;
