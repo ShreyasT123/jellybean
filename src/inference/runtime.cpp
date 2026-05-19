@@ -41,7 +41,7 @@ auto InferenceRuntime::register_model(const std::string& model_id, jellybean::mo
     auto executor = std::make_shared<jellybean::model::ModelExecutor>(meta, cfg_.worker_threads);
     executor->start();
 
-    std::lock_guard lock(mu_);
+    std::unique_lock lock(mu_);
     auto [_, inserted] = executors_.emplace(model_id, std::move(executor));
     return inserted;
 }
@@ -49,7 +49,7 @@ auto InferenceRuntime::register_model(const std::string& model_id, jellybean::mo
 auto InferenceRuntime::unregister_model(const std::string& model_id) -> bool {
     std::shared_ptr<jellybean::model::ModelExecutor> executor;
     {
-        std::lock_guard lock(mu_);
+        std::unique_lock lock(mu_);
         auto it = executors_.find(model_id);
         if (it == executors_.end()) return false;
         executor = std::move(it->second);
@@ -65,9 +65,10 @@ auto InferenceRuntime::infer(const InferenceRequest& req) -> InferenceResponse {
 }
 
 auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<InferenceResponse> {
+    auto t_start = std::chrono::steady_clock::now();
     std::shared_ptr<jellybean::model::ModelExecutor> executor;
     {
-        std::lock_guard lock(mu_);
+        std::shared_lock lock(mu_);
         if (stopped_) {
             std::promise<InferenceResponse> p;
             InferenceResponse resp;
@@ -80,6 +81,8 @@ auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<I
             executor = it->second;
         }
     }
+    auto t_end = std::chrono::steady_clock::now();
+    uint64_t routing_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count();
 
     if (!executor) {
         std::promise<InferenceResponse> p;
@@ -89,13 +92,13 @@ auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<I
         return p.get_future();
     }
 
-    return executor->infer_async(req);
+    return executor->infer_async(req, routing_ns);
 }
 
 void InferenceRuntime::shutdown() {
     std::unordered_map<std::string, std::shared_ptr<jellybean::model::ModelExecutor>> to_stop;
     {
-        std::lock_guard lock(mu_);
+        std::unique_lock lock(mu_);
         if (stopped_) return;
         stopped_ = true;
         to_stop = std::move(executors_);

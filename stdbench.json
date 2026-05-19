@@ -68,18 +68,18 @@
     "requests": 240,
     "concurrency": 8,
     "debug": false,
-    "change": "Triton-style Multi-Model Serving, ModelExecutor, spdlog integration"
+    "change": "Triton-style Multi-Model Serving, ModelExecutor, shared_mutex dynamic routing, condition_variable event-driven queue wakeup, Bun.js client"
   },
   "results_v3_multi_model": {
     "jellybean_async_tcp": {
       "ok": 240,
       "fail": 0,
-      "throughput_rps": 18.91,
-      "latency_ms_avg": 415.18,
-      "latency_ms_p50": 342.77,
-      "latency_ms_p95": 839.78,
-      "latency_ms_p99": 1002.11,
-      "wall_s": 12.688
+      "throughput_rps": 19.84,
+      "latency_ms_avg": 400.63,
+      "latency_ms_p50": 378.94,
+      "latency_ms_p95": 565.36,
+      "latency_ms_p99": 935.89,
+      "wall_s": 12.099
     }
   }
 }

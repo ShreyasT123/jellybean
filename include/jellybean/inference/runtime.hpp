@@ -6,6 +6,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -46,7 +47,7 @@ class InferenceRuntime {
 
    private:
     RuntimeConfig cfg_;
-    std::mutex mu_;
+    mutable std::shared_mutex mu_;
     std::unordered_map<std::string, std::shared_ptr<jellybean::model::ModelExecutor>> executors_;
     bool stopped_{false};
 };

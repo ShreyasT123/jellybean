@@ -27,8 +27,7 @@ namespace jellybean::inference {
 
 auto InferenceRuntime::get_all_metrics() const -> std::vector<jellybean::telemetry::ModelExecutorMetrics> {
     std::vector<jellybean::telemetry::ModelExecutorMetrics> res;
-    // Note: We perform const_cast because we need to lock mu_, which is a std::mutex (non-const)
-    std::lock_guard lock(const_cast<std::mutex&>(mu_));
+    std::shared_lock lock(mu_);
     res.reserve(executors_.size());
     for (const auto& [id, executor] : executors_) {
         const auto& raw_m = executor->metrics();

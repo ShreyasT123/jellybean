@@ -1,8 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -30,7 +33,7 @@ class ModelExecutor {
     ModelExecutor(const ModelExecutor&) = delete;
     auto operator=(const ModelExecutor&) -> ModelExecutor& = delete;
 
-    [[nodiscard]] auto infer_async(const inference::InferenceRequest& req) -> std::future<inference::InferenceResponse>;
+    [[nodiscard]] auto infer_async(const inference::InferenceRequest& req, uint64_t routing_ns = 0) -> std::future<inference::InferenceResponse>;
     
     void start();
     void stop();
@@ -45,6 +48,8 @@ class ModelExecutor {
     struct Task {
         inference::InferenceRequest req;
         std::promise<inference::InferenceResponse> promise;
+        std::chrono::steady_clock::time_point enqueue_time;
+        uint64_t routing_ns{0};
     };
 
     void worker_loop();
@@ -56,6 +61,11 @@ class ModelExecutor {
     jellybean::concurrency::MpmcQueue<Task, 1024> queue_;
     std::atomic<bool> stopped_{true};
     std::vector<std::thread> workers_;
+
+    // Event-driven wakeup helper
+    std::mutex cv_mu_;
+    std::condition_variable cv_;
+    std::atomic<std::intptr_t> queue_size_{0};
 
     telemetry::RuntimeMetrics metrics_;
     telemetry::LatencyHistogram latency_hist_;
