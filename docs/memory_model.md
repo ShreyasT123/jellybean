@@ -1,16 +1,16 @@
-# Memory Model Notes
+# Memory & Concurrency Model Notes
 
 ## Primary Hot-Path Memory Decisions
-- Request I/O buffers are allocated from arena allocators and reset per loop.
-- Runtime queues use bounded lock-free ring buffers to avoid unbounded allocation growth.
-- Model execution copies/normalizes tensors where required by LibTorch semantics.
+- **Zero-Allocation Logging**: Swapped heavy heap-allocated stream classes (`std::ostringstream`) for high-speed dynamic `spdlog` backed by `std::format` (fully optimized for C++23 header-only targets).
+- **MPMC Task Pipelines**: Dedicated lock-free ring buffers (`mpmc_queue`) decouple reactor TCP threads from model execution threads, eliminating lock contention.
+- **Zero-Spin Coroutine Wakening**: The `FutureAwaitable` relies on specialized detached threads inside a global Reactor continuation pool to schedule suspended fibers, bypassing the CPU-expensive coroutine busy-poll loop.
+- **Arena Allocations**: Request and session I/O buffers are recycled and allocated from slab/arena memory maps, preventing fragmentation.
 
-## Safety Rules
-- Never keep `std::span`/pointer views past owner lifetime.
-- Avoid cross-thread ownership ambiguities for buffers returned by async tasks.
-- Validate all network-derived lengths before allocation and copy.
+## Safety & Concurrency Rules
+- **Non-Owning Views**: `std::span` arguments passed to the dynamic batch worker threads are guaranteed valid because the calling fiber is suspended via `FutureAwaitable` and kept alive until the background task completes and wakes it.
+- **Dynamic Routing Isolation**: Different models (`ModelExecutor` instances) operate in separate thread contexts and memory pools to prevent inter-model latency spillover.
+- **Thread Pools**: Continuation thread pools handle async event resolution to avoid blocking the main Reactor epoll event loop.
 
 ## Current Risks To Track
-- Queue pressure can still trigger high reject rates under bursty traffic.
-- Arena usage must remain strictly per-connection/per-thread to avoid races.
-- Batch response cardinality must always match request count in runtime workers.
+- **Tail Latency Contention**: When multiple concurrent connections (e.g. concurrency=8) hit highly intensive TorchScript execution blocks on single-socket CPUs, CPU cache line bouncing and OS scheduler context switching can impact tail (P95/P99) latencies.
+- **Queue Bounds**: Bounded queue backpressure guarantees server stability, but peak bursts above execution capacity will trigger quick client rejection to prevent OOM.
