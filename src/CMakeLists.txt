@@ -15,7 +15,6 @@ set(JELLYBEAN_SOURCES
     model/model_registry.cpp
     model/model_repository.cpp
     model/model_executor.cpp
-    reactor/continuation_pool.cpp
     telemetry/metrics_export.cpp
 )
 
