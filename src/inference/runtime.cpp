@@ -1,6 +1,7 @@
 #include "jellybean/inference/runtime.hpp"
 
 #include <fstream>
+#include "jellybean/reactor/reactor.hpp"
 #include <string>
 
 namespace jellybean::inference {
@@ -60,21 +61,20 @@ auto InferenceRuntime::unregister_model(const std::string& model_id) -> bool {
     return true;
 }
 
-auto InferenceRuntime::infer(const InferenceRequest& req) -> InferenceResponse {
-    return infer_async(req).get();
+void InferenceAwaitable::await_suspend(std::coroutine_handle<> h) {
+    runtime.enqueue(std::move(req), &resp, h);
 }
 
-auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<InferenceResponse> {
+void InferenceRuntime::enqueue(InferenceRequest req, InferenceResponse* resp, std::coroutine_handle<> h) {
     auto t_start = std::chrono::steady_clock::now();
     std::shared_ptr<jellybean::model::ModelExecutor> executor;
     {
         std::shared_lock lock(mu_);
         if (stopped_) {
-            std::promise<InferenceResponse> p;
-            InferenceResponse resp;
-            resp.error = "runtime stopped";
-            p.set_value(std::move(resp));
-            return p.get_future();
+            resp->error = "runtime stopped";
+            resp->ok = false;
+            jellybean::reactor::Reactor::current()->schedule(h);
+            return;
         }
         auto it = executors_.find(req.model_id);
         if (it != executors_.end()) {
@@ -85,14 +85,13 @@ auto InferenceRuntime::infer_async(const InferenceRequest& req) -> std::future<I
     uint64_t routing_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t_end - t_start).count();
 
     if (!executor) {
-        std::promise<InferenceResponse> p;
-        InferenceResponse resp;
-        resp.error = "model not registered in runtime: " + req.model_id;
-        p.set_value(std::move(resp));
-        return p.get_future();
+        resp->error = "model not registered in runtime: " + req.model_id;
+        resp->ok = false;
+        jellybean::reactor::Reactor::current()->schedule(h);
+        return;
     }
 
-    return executor->infer_async(req, routing_ns);
+    executor->enqueue(std::move(req), resp, h, routing_ns);
 }
 
 void InferenceRuntime::shutdown() {
