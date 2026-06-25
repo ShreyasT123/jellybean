@@ -17,8 +17,11 @@
 #include "jellybean/telemetry/metrics.hpp"
 
 #include "jellybean/model/model_executor.hpp"
+#include <coroutine>
 
 namespace jellybean::inference {
+
+class InferenceRuntime;
 
 struct RuntimeConfig {
     std::size_t worker_threads{1};
@@ -38,8 +41,7 @@ class InferenceRuntime {
     
     [[nodiscard]] auto unregister_model(const std::string& model_id) -> bool;
 
-    [[nodiscard]] auto infer(const InferenceRequest& req) -> InferenceResponse;
-    [[nodiscard]] auto infer_async(const InferenceRequest& req) -> std::future<InferenceResponse>;
+    void enqueue(InferenceRequest req, InferenceResponse* resp, std::coroutine_handle<> h);
     
     [[nodiscard]] auto get_all_metrics() const -> std::vector<jellybean::telemetry::ModelExecutorMetrics>;
 
@@ -50,6 +52,23 @@ class InferenceRuntime {
     mutable std::shared_mutex mu_;
     std::unordered_map<std::string, std::shared_ptr<jellybean::model::ModelExecutor>> executors_;
     bool stopped_{false};
+};
+
+struct InferenceAwaitable {
+    InferenceRuntime& runtime;
+    InferenceRequest req;
+    InferenceResponse resp;
+
+    InferenceAwaitable(InferenceRuntime& rt, InferenceRequest request)
+        : runtime(rt), req(std::move(request)) {}
+
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> h);
+
+    InferenceResponse await_resume() {
+        return std::move(resp);
+    }
 };
 
 }  // namespace jellybean::inference

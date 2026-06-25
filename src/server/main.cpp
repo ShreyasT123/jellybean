@@ -18,10 +18,10 @@
 #include "jellybean/core/errors.hpp"
 #include "jellybean/core/logging.hpp"
 #include "jellybean/inference/runtime.hpp"
+#include "jellybean/memory/arena.hpp"
 #include "jellybean/inference/torch_backend.hpp"
 #include "jellybean/net/async_socket.hpp"
 #include "jellybean/reactor/epoll_backend.hpp"
-#include "jellybean/reactor/future_awaitable.hpp"
 #include "jellybean/reactor/reactor.hpp"
 #include "jellybean/scheduler/fiber.hpp"
 #include "jellybean/model/model_registry.hpp"
@@ -120,9 +120,11 @@ struct AsyncAcceptAwaitable {
 // Removed await_future as Task<T> await semantics are not safe for suspending inner tasks.
 
 Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig config) {
+    jellybean::memory::ArenaAllocator arena(1024 * 1024); // 1MB arena per session
     try {
         JELLY_LOG_INFO("[SESSION] New client connected");
         while (g_running) {
+            arena.reset();
             uint8_t model_id_len = 0;
             ssize_t n = co_await sock.read(&model_id_len, 1);
             if (n <= 0) break;
@@ -146,16 +148,15 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
                 throw MemoryException("Input elements exceed maximum limit: " + std::to_string(input_elems));
             }
 
-            std::vector<float> input_vec;
-            try {
-                input_vec.resize(input_elems);
-            } catch (const std::bad_alloc& e) {
+            float* input_data = static_cast<float*>(arena.allocate(input_elems * sizeof(float), alignof(float)));
+            if (!input_data) {
                 throw MemoryException("Failed to allocate input buffer for " + std::to_string(input_elems) + " elements");
             }
+
             size_t bytes_to_read = input_elems * sizeof(float);
             size_t bytes_read = 0;
             while (bytes_read < bytes_to_read) {
-                n = co_await sock.read(reinterpret_cast<char*>(input_vec.data()) + bytes_read,
+                n = co_await sock.read(reinterpret_cast<char*>(input_data) + bytes_read,
                                        bytes_to_read - bytes_read);
                 if (n <= 0) {
                     JELLY_LOG_DEBUG("[SESSION] Read payload failed: n={} bytes_read={}/{}", n, bytes_read, bytes_to_read);
@@ -165,22 +166,20 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
             }
             JELLY_LOG_DEBUG("[SESSION] Received payload: {} bytes", bytes_read);
 
-            std::vector<float> output_buf;
-            try {
-                output_buf.resize(input_elems);
-            } catch (const std::bad_alloc& e) {
+            float* output_data = static_cast<float*>(arena.allocate(input_elems * sizeof(float), alignof(float)));
+            if (!output_data) {
                 throw MemoryException("Failed to allocate output buffer for " + std::to_string(input_elems) + " elements");
             }
 
             InferenceRequest req;
             req.model_id = model_id;
             req.shape = config.input_shape; // Fallback, could be removed later
-            req.input = input_vec;
-            req.output_buffer = output_buf;
+            req.input = std::span<const float>(input_data, input_elems);
+            req.output_buffer = std::span<float>(output_data, input_elems);
             req.device = config.device;
 
             JELLY_LOG_DEBUG("[SESSION] Calling infer_async for model '{}'", model_id);
-            InferenceResponse resp = co_await infer_future(runtime.infer_async(req));
+            InferenceResponse resp = co_await InferenceAwaitable(runtime, std::move(req));
             JELLY_LOG_DEBUG("[SESSION] Inference completed: ok={} latency_ns={} output_elems={}", resp.ok, resp.latency_ns, resp.output_elems_written);
 
             uint8_t status = resp.ok ? 1 : 0;
@@ -195,7 +194,7 @@ Task<> session(AsyncSocket sock, InferenceRuntime& runtime, ExtendedConfig confi
             JELLY_LOG_DEBUG("[SESSION] Sent out_elems: {} (wrote {} bytes)", out_elems, n);
 
             if (resp.ok && out_elems > 0) {
-                n = co_await sock.write(output_buf.data(), out_elems * sizeof(float));
+                n = co_await sock.write(output_data, out_elems * sizeof(float));
                 JELLY_LOG_DEBUG("[SESSION] Sent output payload: {} bytes (wrote {} bytes)", out_elems * sizeof(float), n);
             }
         }

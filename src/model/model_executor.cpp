@@ -3,6 +3,9 @@
 #include <chrono>
 
 #include "jellybean/concurrency/backoff.hpp"
+#include "jellybean/reactor/reactor.hpp"
+
+using namespace jellybean::reactor;
 
 namespace jellybean::model {
 
@@ -39,20 +42,22 @@ void ModelExecutor::stop() {
     }
 }
 
-auto ModelExecutor::infer_async(const inference::InferenceRequest& req, uint64_t routing_ns) -> std::future<inference::InferenceResponse> {
+void ModelExecutor::enqueue(inference::InferenceRequest req, inference::InferenceResponse* resp, std::coroutine_handle<> h, uint64_t routing_ns) {
     metrics_.requests_received.fetch_add(1, std::memory_order_relaxed);
 
     Task slot;
     slot.req = req;
+    slot.resp_ptr = resp;
+    slot.handle = h;
+    slot.reactor_ptr = Reactor::current();
     slot.enqueue_time = std::chrono::steady_clock::now();
     slot.routing_ns = routing_ns;
-    auto fut = slot.promise.get_future();
 
     if (!meta_ || !meta_->is_ready() || !meta_->backend) {
-        inference::InferenceResponse resp;
-        resp.error = "model not ready: " + req.model_id;
-        slot.promise.set_value(std::move(resp));
-        return fut;
+        resp->error = "model not ready: " + req.model_id;
+        resp->ok = false;
+        (slot.reactor_ptr ? slot.reactor_ptr : Reactor::current())->schedule(h);
+        return;
     }
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50); // hardcoded enqueue timeout for now
@@ -62,24 +67,23 @@ auto ModelExecutor::infer_async(const inference::InferenceRequest& req, uint64_t
         if (queue_.try_push(std::move(temp))) {
             queue_size_.fetch_add(1, std::memory_order_release);
             cv_.notify_one();
-            return fut;
+            return;
         }
         slot = std::move(temp); // NOLINT(bugprone-use-after-move)
         
         if (std::chrono::steady_clock::now() > deadline) {
             metrics_.queue_timeouts.fetch_add(1, std::memory_order_relaxed);
-            inference::InferenceResponse resp;
-            resp.error = "queue full timeout for model: " + req.model_id;
-            slot.promise.set_value(std::move(resp));
-            return fut;
+            resp->error = "queue full timeout for model: " + req.model_id;
+            resp->ok = false;
+            (slot.reactor_ptr ? slot.reactor_ptr : Reactor::current())->schedule(h);
+            return;
         }
         std::this_thread::yield();
     }
 
-    inference::InferenceResponse resp;
-    resp.error = "executor stopped";
-    slot.promise.set_value(std::move(resp));
-    return fut;
+    resp->error = "executor stopped";
+    resp->ok = false;
+    (slot.reactor_ptr ? slot.reactor_ptr : Reactor::current())->schedule(h);
 }
 
 void ModelExecutor::worker_loop() {
@@ -145,21 +149,15 @@ void ModelExecutor::worker_loop() {
                 resps[i].queue_wait_ns = queue_waits[i];
                 resps[i].execution_ns = execution_ns;
                 
-                auto t_send_start = std::chrono::steady_clock::now();
-                batch[i].promise.set_value(std::move(resps[i]));
-                auto t_send_end = std::chrono::steady_clock::now();
-                
-                // Note: response sending is immediate since it resolves the future local to the connection fiber.
-                // We can record send timing metrics in the connection fiber itself if needed, or estimate it here.
-                (void)t_send_start;
-                (void)t_send_end;
+                *batch[i].resp_ptr = std::move(resps[i]);
+                (batch[i].reactor_ptr ? batch[i].reactor_ptr : Reactor::current())->schedule(batch[i].handle);
             }
         } else {
             // Backend disappeared or model stopped during batching
             for (size_t i = 0; i < batch.size(); ++i) {
-                inference::InferenceResponse resp;
-                resp.error = "backend unavailable";
-                batch[i].promise.set_value(std::move(resp));
+                batch[i].resp_ptr->error = "backend unavailable";
+                batch[i].resp_ptr->ok = false;
+                (batch[i].reactor_ptr ? batch[i].reactor_ptr : Reactor::current())->schedule(batch[i].handle);
             }
         }
     }

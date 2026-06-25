@@ -34,6 +34,7 @@
 #include <memory>
 #include <numeric>
 #include <thread>
+#include <future>
 
 // Include Subsystem Headers
 #include "jellybean/actor/actor.hpp"
@@ -49,7 +50,10 @@
 #include "jellybean/memory/slab.hpp"
 #include "jellybean/proto/codec.hpp"
 #include "jellybean/reactor/reactor.hpp"
+#include "jellybean/reactor/epoll_backend.hpp"
 #include "jellybean/reactor/timer_wheel.hpp"
+
+using namespace jellybean::reactor;
 #include "jellybean/scheduler/fiber.hpp"
 #include "jellybean/scheduler/scheduler.hpp"
 #include "jellybean/scheduler/work_stealing_deque.hpp"
@@ -779,41 +783,80 @@ TEST(PedagogicalWalkthroughTest, Module7_InferenceServingRuntime) {
     jellybean::inference::InferenceRuntime runtime(config);
 
     auto backend = std::make_shared<MockInferenceBackend>();
-    EXPECT_TRUE(runtime.register_model("mock_transformer", backend));
+    jellybean::model::ModelMetadata meta;
+    meta.backend = backend;
+    meta.state.store(jellybean::model::ModelState::Ready, std::memory_order_release);
+
+    EXPECT_TRUE(runtime.register_model("mock_transformer", &meta));
     print_concept("Model 'mock_transformer' registered in Serving Runtime");
 
     // Launch concurrent serving client requests
     print_subheader("2. Concurrent Client Request Load Handling");
     constexpr int REQUESTS = 20;
-    std::vector<std::vector<float>> inputs(REQUESTS);
-    std::vector<std::vector<float>> outputs(REQUESTS);
-    std::vector<std::future<jellybean::inference::InferenceResponse>> client_futures;
+
+    struct ClientSession {
+        std::vector<float> input;
+        std::vector<float> output;
+        jellybean::inference::InferenceResponse resp;
+        std::promise<void> done;
+    };
+
+    std::vector<std::unique_ptr<ClientSession>> sessions;
+
+    // We need a reactor to drive the InferenceAwaitable
+    auto reactor_ptr = std::make_unique<jellybean::reactor::Reactor>(std::make_unique<jellybean::reactor::EpollBackend>());
+    auto& reactor = *reactor_ptr;
 
     for (int i = 0; i < REQUESTS; ++i) {
-        inputs[i] = {1.0f * i, 2.0f * i, 3.0f * i, 4.0f * i};
-        outputs[i].resize(4);
+        auto session = std::make_unique<ClientSession>();
+        session->input = {1.0f * i, 2.0f * i, 3.0f * i, 4.0f * i};
+        session->output.resize(4);
 
-        jellybean::inference::InferenceRequest req;
-        req.model_id = "mock_transformer";
-        req.shape = {1, 4};
-        req.input = inputs[i];
-        req.output_buffer = outputs[i];
+        auto run_client = [](jellybean::inference::InferenceRuntime& rt, ClientSession* s) -> jellybean::scheduler::Task<> {
+            jellybean::inference::InferenceRequest req;
+            req.model_id = "mock_transformer";
+            req.shape = {1, 4};
+            req.input = s->input;
+            req.output_buffer = s->output;
 
-        // Dispatch asynchronous request
-        client_futures.push_back(
-            std::async(std::launch::async, [&runtime, req]() { return runtime.infer(req); }));
+            s->resp = co_await jellybean::inference::InferenceAwaitable(rt, std::move(req));
+            s->done.set_value();
+            co_return;
+        };
+
+        auto task = run_client(runtime, session.get());
+        reactor.schedule(task.release());
+        sessions.push_back(std::move(session));
     }
+
+    // Run reactor in a separate thread to handle completions
+    std::atomic<bool> reactor_running{true};
+    std::thread reactor_thread([&]() {
+        while (reactor_running) {
+            try {
+                reactor.run();
+            } catch (...) {}
+            std::this_thread::sleep_for(1ms);
+        }
+    });
 
     // Await all client responses
     int successful_responses = 0;
     for (int i = 0; i < REQUESTS; ++i) {
-        auto resp = client_futures[i].get();
-        if (resp.ok) {
+        auto fut = sessions[i]->done.get_future();
+        while (fut.wait_for(100ms) != std::future_status::ready) {
+            if (!reactor_running) break;
+        }
+        if (sessions[i]->resp.ok) {
             successful_responses++;
-            EXPECT_EQ(outputs[i][0], 1.0f * i * 2.0f);
-            EXPECT_EQ(outputs[i][3], 4.0f * i * 2.0f);
+            EXPECT_EQ(sessions[i]->output[0], 1.0f * i * 2.0f);
+            EXPECT_EQ(sessions[i]->output[3], 4.0f * i * 2.0f);
         }
     }
+
+    reactor_running = false;
+    reactor.stop();
+    reactor_thread.join();
 
     print_metric("Concurrently enqueued and served client requests", static_cast<double>(REQUESTS),
                  "requests");

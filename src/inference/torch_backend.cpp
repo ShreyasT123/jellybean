@@ -65,9 +65,6 @@ class TorchBackend final : public IInferenceBackend {
         const auto t0 = steady_clock_t::now();
         InferenceResponse resp;
 
-        fprintf(stderr, "[TORCH_BACKEND] infer called: model_id=%s shape_size=%zu input_size=%zu output_buffer_size=%zu\n",
-                req.model_id.c_str(), req.shape.size(), req.input.size(), req.output_buffer.size());
-
         ModelState st;
         {
             std::lock_guard lock(mu_);
@@ -81,39 +78,32 @@ class TorchBackend final : public IInferenceBackend {
         }
 
         try {
-            // auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(st.device);
+            // No .clone() here, .to(device) will handle the move/copy to GPU if needed.
+            // If device is CPU, from_blob is zero-copy (view), and if it's the target device,
+            // no copy happens until the forward pass or if it is modified.
             torch::Tensor x = torch::from_blob(const_cast<float*>(req.input.data()), req.shape,
                                                torch::TensorOptions().dtype(torch::kFloat32))
-                                  .clone()
                                   .to(st.device);
-
-            fprintf(stderr, "[TORCH_BACKEND] Input tensor created: numel=%zu\n", x.numel());
 
             torch::Tensor y;
             if (st.has_module) {
-                fprintf(stderr, "[TORCH_BACKEND] Calling module.forward()\n");
                 std::vector<torch::jit::IValue> inputs;
                 inputs.emplace_back(x);
                 y = st.module.forward(inputs).toTensor();
-                fprintf(stderr, "[TORCH_BACKEND] Module forward completed: output numel=%zu\n", y.numel());
             } else {
-                fprintf(stderr, "[TORCH_BACKEND] Using default relu operation\n");
                 y = torch::relu(x * 2.0f + 1.0f);
             }
 
-            y = y.to(torch::kCPU).contiguous();
+            y = y.to(torch::kCPU); // contiguous() is often redundant after .to(kCPU)
             resp.shape.assign(y.sizes().begin(), y.sizes().end());
 
             auto numel = static_cast<size_t>(y.numel());
-            fprintf(stderr, "[TORCH_BACKEND] Output tensor: numel=%zu buffer_size=%zu\n", numel, req.output_buffer.size());
             if (numel > req.output_buffer.size()) {
-                fprintf(stderr, "[TORCH_BACKEND] ERROR: output buffer too small\n");
                 resp.error = "output buffer too small";
             } else {
                 std::memcpy(req.output_buffer.data(), y.data_ptr<float>(), numel * sizeof(float));
                 resp.output_elems_written = static_cast<uint32_t>(numel);
                 resp.ok = true;
-                fprintf(stderr, "[TORCH_BACKEND] Inference successful\n");
             }
         } catch (const c10::Error& e) {
             fprintf(stderr, "[TORCH_BACKEND] Torch error: %s\n", e.what_without_backtrace());
@@ -134,8 +124,6 @@ class TorchBackend final : public IInferenceBackend {
         std::vector<InferenceResponse> responses(batch.size());
         if (batch.empty()) return responses;
 
-        fprintf(stderr, "[TORCH_BACKEND] infer_batch called with batch_size=%zu\n", batch.size());
-
         ModelState st;
         {
             std::lock_guard lock(mu_);
@@ -148,61 +136,43 @@ class TorchBackend final : public IInferenceBackend {
             st = it->second;
         }
 
-        fprintf(stderr, "[TORCH_BACKEND] Model found. has_module=%d device=%s\n", st.has_module, 
-                st.device.type() == torch::kCPU ? "CPU" : "CUDA");
-
         try {
             std::vector<torch::Tensor> tensors;
             tensors.reserve(batch.size());
             for (size_t i = 0; i < batch.size(); ++i) {
                 const auto& req = batch[i];
-                fprintf(stderr, "[TORCH_BACKEND] Request %zu: shape=[%zu], input_size=%zu, output_buffer_size=%zu\n",
-                        i, req.shape.size(), req.input.size(), req.output_buffer.size());
                 tensors.push_back(torch::from_blob(const_cast<float*>(req.input.data()), req.shape,
                                                    torch::TensorOptions().dtype(torch::kFloat32))
-                                      .clone()
                                       .to(st.device));
-                fprintf(stderr, "[TORCH_BACKEND] Tensor %zu created: size=%zu\n", i, tensors.back().numel());
             }
 
-            fprintf(stderr, "[TORCH_BACKEND] Concatenating %zu tensors along dim 0\n", tensors.size());
-            torch::Tensor x = torch::cat(tensors, 0);  // Concat along batch dimension (dim 0)
-            fprintf(stderr, "[TORCH_BACKEND] After concat: x.numel()=%zu\n", x.numel());
+            torch::Tensor x = torch::cat(tensors, 0);
 
             torch::Tensor y;
             if (st.has_module) {
-                fprintf(stderr, "[TORCH_BACKEND] Calling module.forward()\n");
                 std::vector<torch::jit::IValue> inputs;
                 inputs.emplace_back(x);
                 y = st.module.forward(inputs).toTensor();
-                fprintf(stderr, "[TORCH_BACKEND] Module forward completed: y.numel()=%zu\n", y.numel());
             } else {
-                fprintf(stderr, "[TORCH_BACKEND] Using default relu operation\n");
                 y = torch::relu(x * 2.0f + 1.0f);
             }
 
-            y = y.to(torch::kCPU).contiguous();
-            fprintf(stderr, "[TORCH_BACKEND] After to CPU: y.numel()=%zu\n", y.numel());
+            y = y.to(torch::kCPU);
 
             // Chunk back to individual responses
             auto chunks = y.chunk(batch.size(), 0);
-            fprintf(stderr, "[TORCH_BACKEND] Chunked into %zu chunks\n", chunks.size());
             for (size_t i = 0; i < batch.size(); ++i) {
                 auto& chunk = chunks[i];
                 responses[i].shape.assign(chunk.sizes().begin(), chunk.sizes().end());
 
                 auto numel = static_cast<size_t>(chunk.numel());
-                fprintf(stderr, "[TORCH_BACKEND] Chunk %zu: numel=%zu, output_buffer_size=%zu\n",
-                        i, numel, batch[i].output_buffer.size());
                 if (numel > batch[i].output_buffer.size()) {
-                    fprintf(stderr, "[TORCH_BACKEND] ERROR: output buffer too small for chunk %zu\n", i);
                     responses[i].error = "output buffer too small";
                 } else {
                     std::memcpy(batch[i].output_buffer.data(), chunk.data_ptr<float>(),
                                 numel * sizeof(float));
                     responses[i].output_elems_written = static_cast<uint32_t>(numel);
                     responses[i].ok = true;
-                    fprintf(stderr, "[TORCH_BACKEND] Chunk %zu copied successfully\n", i);
                 }
                 responses[i].latency_ns = static_cast<uint64_t>(
                     std::chrono::duration_cast<ns>(steady_clock_t::now() - t0).count());

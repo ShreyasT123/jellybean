@@ -18,7 +18,12 @@ namespace {
 auto make_backend(BackendKind kind) -> std::shared_ptr<inference::IInferenceBackend> {
     switch (kind) {
         case BackendKind::TorchScript:
+#ifdef ENABLE_TORCH
             return inference::make_torch_backend();
+#else
+            JELLY_LOG_ERROR("[REPO] Torch backend requested but ENABLE_TORCH=OFF");
+            return nullptr;
+#endif
         case BackendKind::Onnx:
             JELLY_LOG_ERROR("[REPO] ONNX backend not yet implemented");
             return nullptr;
